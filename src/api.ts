@@ -1,0 +1,132 @@
+import type {
+  BranchRecord,
+  FsListResponse,
+  LocalBranchWorktreeResult,
+  OperationRecord,
+  RepoRecord,
+  RepoSummary,
+  WorktreeHandoffResult,
+  WorktreeRecord
+} from "./types";
+
+async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers
+    }
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const message = payload.detail
+      ? `${payload.error}: ${payload.detail}`
+      : payload.error || "Pedido falhou.";
+    throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
+}
+
+export const api = {
+  listFs(path?: string) {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return request<FsListResponse>(`/api/fs${query}`);
+  },
+  listRepos() {
+    return request<RepoRecord[]>("/api/repos");
+  },
+  addRepo(path: string) {
+    return request<RepoRecord>("/api/repos", {
+      method: "POST",
+      body: JSON.stringify({ path })
+    });
+  },
+  summary(repoId: string, worktreePath?: string) {
+    return request<RepoSummary>(withWorktreeQuery(`/api/repos/${repoId}/summary`, worktreePath));
+  },
+  worktrees(repoId: string, worktreePath?: string) {
+    return request<WorktreeRecord[]>(withWorktreeQuery(`/api/repos/${repoId}/worktrees`, worktreePath));
+  },
+  createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string }) {
+    return request<{ path: string }>(`/api/repos/${repoId}/worktrees`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  },
+  removeWorktree(repoId: string, worktreeId: string, confirm: string) {
+    return request<void>(`/api/repos/${repoId}/worktrees/${encodeURIComponent(worktreeId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm })
+    });
+  },
+  handoffWorktreeToLocal(repoId: string, worktreeId: string) {
+    return request<WorktreeHandoffResult>(
+      `/api/repos/${repoId}/worktrees/${encodeURIComponent(worktreeId)}/handoff-local`,
+      {
+        method: "POST"
+      }
+    );
+  },
+  moveLocalBranchToWorktree(repoId: string, body: { name?: string; path?: string } = {}) {
+    return request<LocalBranchWorktreeResult>(`/api/repos/${repoId}/worktrees/move-local`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  },
+  branches(repoId: string, worktreePath?: string) {
+    return request<BranchRecord[]>(withWorktreeQuery(`/api/repos/${repoId}/branches`, worktreePath));
+  },
+  createBranch(repoId: string, body: { name: string; from?: string; worktreePath?: string }) {
+    return request<{ name: string }>(`/api/repos/${repoId}/branches`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  },
+  checkoutBranch(repoId: string, branchName: string, worktreePath?: string) {
+    return request<{ branch: string }>(
+      `/api/repos/${repoId}/branches/${encodeURIComponent(branchName)}/checkout`,
+      {
+        method: "POST",
+        body: JSON.stringify({ worktreePath })
+      }
+    );
+  },
+  deleteBranch(repoId: string, branchName: string, confirm: string, force = false, worktreePath?: string) {
+    return request<void>(`/api/repos/${repoId}/branches/${encodeURIComponent(branchName)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm, force, worktreePath })
+    });
+  },
+  fetchRepo(repoId: string, worktreePath?: string) {
+    return request<{ ok: boolean }>(`/api/repos/${repoId}/fetch`, {
+      method: "POST",
+      body: JSON.stringify({ worktreePath })
+    });
+  },
+  pullRepo(repoId: string, worktreePath?: string) {
+    return request<{ ok: boolean }>(`/api/repos/${repoId}/pull`, {
+      method: "POST",
+      body: JSON.stringify({ worktreePath })
+    });
+  },
+  openPath(path: string) {
+    return request<{ ok: boolean }>("/api/open", {
+      method: "POST",
+      body: JSON.stringify({ path })
+    });
+  },
+  operations() {
+    return request<OperationRecord[]>("/api/operations");
+  }
+};
+
+function withWorktreeQuery(url: string, worktreePath?: string) {
+  if (!worktreePath) return url;
+  return `${url}?worktreePath=${encodeURIComponent(worktreePath)}`;
+}
