@@ -6,6 +6,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  assertCleanWorktreeForSafeOperation,
+  checkoutBranch,
+  createWorktree,
   defaultWorktreeName,
   getBranches,
   getRepoDetail,
@@ -18,7 +21,9 @@ import {
   validateRepository
 } from "../server/git";
 import { buildOpenCommand, isAllowedOrigin, validateOpenTarget } from "../server/app";
+import { getDiagnosticsSnapshot, recordDiagnosticEvent, summarizeOperationStats } from "../server/diagnostics";
 import { AppStore } from "../server/store";
+import type { OperationRecord } from "../src/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +74,89 @@ describe("api", () => {
       stashCount: 0
     });
     await expect(store.listOperations()).resolves.toEqual([]);
+  });
+
+  it("persists safe mode settings", async () => {
+    await expect(store.getSettings()).resolves.toEqual({
+      safeMode: true,
+      integrations: {
+        editor: "auto",
+        terminal: "auto"
+      }
+    });
+
+    await expect(store.updateSettings({
+      safeMode: false,
+      integrations: {
+        editor: "cursor",
+        terminal: "iterm"
+      }
+    })).resolves.toEqual({
+      safeMode: false,
+      integrations: {
+        editor: "cursor",
+        terminal: "iterm"
+      }
+    });
+
+    const reloadedStore = new AppStore(path.join(tmpDir, "state.json"));
+    await expect(reloadedStore.getSettings()).resolves.toEqual({
+      safeMode: false,
+      integrations: {
+        editor: "cursor",
+        terminal: "iterm"
+      }
+    });
+  });
+
+  it("builds diagnostics snapshots and operation metrics", async () => {
+    const operations: OperationRecord[] = [
+      operationFixture("op-1", "success", 100, false, "2026-07-01T10:00:01.000Z"),
+      operationFixture("op-2", "error", 2_000, true, "2026-07-01T10:00:02.000Z"),
+      operationFixture("op-3", "success", 400, false, "2026-07-01T10:00:03.000Z")
+    ];
+
+    expect(summarizeOperationStats(operations)).toMatchObject({
+      success: 2,
+      error: 1,
+      timedOut: 1,
+      averageDurationMs: 833,
+      p95DurationMs: 2_000,
+      slowestDurationMs: 2_000,
+      lastFailureAt: "2026-07-01T10:00:02.000Z"
+    });
+
+    const diagnosticEvent = await recordDiagnosticEvent(store, {
+      level: "error",
+      name: "ui_action_failed",
+      message: "Ação falhou",
+      detail: "Detalhe técnico",
+      context: { page: "settings" }
+    });
+    const snapshot = await getDiagnosticsSnapshot(store, "node", "test-platform");
+
+    expect(diagnosticEvent.command).toBe("app");
+    expect(diagnosticEvent.args).toEqual(["diagnostic", "error", "ui_action_failed"]);
+    expect(snapshot).toMatchObject({
+      runtime: "node",
+      platform: "test-platform",
+      statePath: path.join(tmpDir, "state.json"),
+      operationCount: 1,
+      repositoryCount: 0,
+      operationStats: {
+        error: 1
+      }
+    });
+  });
+
+  it("blocks safe mode preflight when a worktree has uncommitted changes", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await fs.appendFile(path.join(repo.path, "README.md"), "dirty work\n");
+
+    await expect(
+      assertCleanWorktreeForSafeOperation(repo.path, "checkout de branch", store)
+    ).rejects.toThrow("Modo seguro: checkout de branch bloqueado");
   });
 
   it("returns detail data for a dirty worktree", async () => {
@@ -271,6 +359,30 @@ describe("api", () => {
       command: "ghostty",
       args: ["--working-directory=/tmp/repo"]
     });
+    expect(
+      buildOpenCommand("/tmp/repo", "editor", "darwin", {}, {
+        safeMode: true,
+        integrations: {
+          editor: "cursor",
+          terminal: "auto"
+        }
+      })
+    ).toEqual({
+      command: "cursor",
+      args: ["/tmp/repo"]
+    });
+    expect(
+      buildOpenCommand("/tmp/repo", "terminal", "darwin", {}, {
+        safeMode: true,
+        integrations: {
+          editor: "auto",
+          terminal: "iterm"
+        }
+      })
+    ).toEqual({
+      command: "open",
+      args: ["-a", "iTerm", "/tmp/repo"]
+    });
   });
 
   it("creates and removes a worktree with name confirmation", async () => {
@@ -288,6 +400,48 @@ describe("api", () => {
     expect(path.basename(created?.path ?? "")).toBe("repo-feature-test");
     await runGit(repo.path, ["worktree", "remove", created!.path], store);
     await expect(fs.access(created!.path)).rejects.toThrow();
+  });
+
+  it("creates a worktree from a remote branch and tracks the upstream", async () => {
+    const remoteDir = path.join(tmpDir, "remote.git");
+    await fs.mkdir(remoteDir);
+    await git(remoteDir, "init", "--bare");
+    await git(repoDir, "remote", "add", "origin", remoteDir);
+    await git(repoDir, "push", "-u", "origin", "main");
+    await git(repoDir, "switch", "-c", "feature/remote-work");
+    await fs.appendFile(path.join(repoDir, "README.md"), "remote work\n");
+    await git(repoDir, "add", "README.md");
+    await git(repoDir, "commit", "-m", "remote work");
+    await git(repoDir, "push", "-u", "origin", "feature/remote-work");
+    await git(repoDir, "switch", "main");
+    await git(repoDir, "branch", "-D", "feature/remote-work");
+
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    const targetPath = await createWorktree(
+      repo,
+      { branch: "origin/feature/remote-work", newBranch: false },
+      store
+    );
+
+    const branch = await git(targetPath, "branch", "--show-current");
+    const upstream = await git(targetPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}");
+
+    expect(path.basename(targetPath)).toBe("repo-origin-feature-remote-work");
+    expect(branch.stdout.trim()).toBe("feature/remote-work");
+    expect(upstream.stdout.trim()).toBe("origin/feature/remote-work");
+  });
+
+  it("blocks checkout when the branch is already checked out in another worktree", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    const targetPath = path.join(tmpDir, "occupied-worktree");
+    await runGit(repo.path, ["branch", "feature/occupied"], store);
+    await runGit(repo.path, ["worktree", "add", targetPath, "feature/occupied"], store);
+
+    await expect(checkoutBranch(repo.path, "feature/occupied", repo.path, store)).rejects.toThrow(
+      'A branch "feature/occupied" já está checked out em'
+    );
   });
 
   it("validates and summarizes a focused worktree path", async () => {
@@ -499,6 +653,34 @@ describe("api", () => {
     expect(worktreeBranch.stdout.trim()).toBe("feature/custom-reuse");
   });
 });
+
+function operationFixture(
+  id: string,
+  status: OperationRecord["status"],
+  durationMs: number,
+  timedOut: boolean,
+  finishedAt: string
+): OperationRecord {
+  return {
+    id,
+    command: "git",
+    args: ["status"],
+    cwd: "/tmp/repo",
+    startedAt: "2026-07-01T10:00:00.000Z",
+    finishedAt,
+    status,
+    exitCode: status === "success" ? 0 : 1,
+    summary: status,
+    stdout: "",
+    stderr: status === "success" ? "" : "fatal",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    durationMs,
+    timeoutMs: 30_000,
+    timedOut,
+    signal: null
+  };
+}
 
 function git(cwd: string, ...args: string[]) {
   return execFileAsync("git", args, { cwd });

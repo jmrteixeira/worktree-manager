@@ -65,7 +65,12 @@ describe("git parsing", () => {
   });
 
   it("parses porcelain file status", () => {
-    const output = [" M README.md", "A  staged.txt", "?? notes.txt", "R  old.txt -> new.txt"].join("\n");
+    const output = [
+      " M README.md",
+      "A  staged.txt",
+      '?? "notes with space.txt"',
+      "R  old.txt -> new.txt"
+    ].join("\n");
 
     const files = parseStatusPorcelain(output);
 
@@ -85,7 +90,7 @@ describe("git parsing", () => {
         label: "Adicionado"
       },
       {
-        path: "notes.txt",
+        path: "notes with space.txt",
         originalPath: null,
         indexStatus: "?",
         worktreeStatus: "?",

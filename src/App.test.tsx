@@ -13,6 +13,11 @@ vi.mock("./api", () => ({
     branches: vi.fn(),
     listFs: vi.fn(),
     addRepo: vi.fn(),
+    getSettings: vi.fn(),
+    updateSettings: vi.fn(),
+    integrations: vi.fn(),
+    diagnostics: vi.fn(),
+    recordDiagnosticEvent: vi.fn(),
     createWorktree: vi.fn(),
     removeWorktree: vi.fn(),
     handoffWorktreeToLocal: vi.fn(),
@@ -29,6 +34,88 @@ vi.mock("./api", () => ({
 
 const mockedApi = vi.mocked(api);
 
+const defaultSettings = {
+  safeMode: true,
+  integrations: {
+    editor: "auto" as const,
+    terminal: "auto" as const
+  }
+};
+
+const defaultIntegrationCatalog = {
+  settings: defaultSettings.integrations,
+  editors: [
+    {
+      id: "auto" as const,
+      kind: "editor" as const,
+      label: "Auto",
+      description: "Usa o comportamento padrão da aplicação.",
+      available: true,
+      selected: true,
+      command: null
+    },
+    {
+      id: "vscode" as const,
+      kind: "editor" as const,
+      label: "Visual Studio Code",
+      description: "Abre worktrees com o comando code.",
+      available: true,
+      selected: false,
+      command: "code"
+    },
+    {
+      id: "cursor" as const,
+      kind: "editor" as const,
+      label: "Cursor",
+      description: "Abre worktrees com o comando cursor.",
+      available: true,
+      selected: false,
+      command: "cursor"
+    }
+  ],
+  terminals: [
+    {
+      id: "auto" as const,
+      kind: "terminal" as const,
+      label: "Auto",
+      description: "Usa o comportamento padrão da aplicação.",
+      available: true,
+      selected: true,
+      command: null
+    },
+    {
+      id: "iterm" as const,
+      kind: "terminal" as const,
+      label: "iTerm",
+      description: "Abre worktrees no iTerm em macOS.",
+      available: true,
+      selected: false,
+      command: "open -a iTerm"
+    }
+  ]
+};
+
+const defaultDiagnostics = {
+  generatedAt: "2026-07-01T10:00:00.000Z",
+  appVersion: "1.0.0",
+  runtime: "node" as const,
+  platform: "darwin",
+  statePath: "/tmp/worktree-manager-state.json",
+  repositoryCount: 0,
+  operationCount: 0,
+  operationStats: {
+    success: 0,
+    error: 0,
+    timedOut: 0,
+    averageDurationMs: 0,
+    p95DurationMs: 0,
+    slowestDurationMs: 0,
+    lastFailureAt: null
+  },
+  recentFailures: [],
+  settings: defaultSettings
+};
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,6 +125,35 @@ describe("App", () => {
     document.documentElement.removeAttribute("data-theme-preference");
     document.documentElement.style.colorScheme = "";
     mockedApi.operations.mockResolvedValue([]);
+    mockedApi.diagnostics.mockResolvedValue(defaultDiagnostics);
+    mockedApi.integrations.mockResolvedValue(defaultIntegrationCatalog);
+    mockedApi.recordDiagnosticEvent.mockResolvedValue({
+      id: "diag-1",
+      command: "app",
+      args: ["diagnostic", "error", "test"],
+      cwd: "worktree-manager",
+      startedAt: "2026-07-01T10:00:00.000Z",
+      finishedAt: "2026-07-01T10:00:00.000Z",
+      status: "error",
+      exitCode: 1,
+      summary: "test",
+      stdout: "",
+      stderr: "test",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 0,
+      timeoutMs: 0,
+      timedOut: false,
+      signal: null
+    });
+    mockedApi.getSettings.mockResolvedValue(defaultSettings);
+    mockedApi.updateSettings.mockImplementation(async (settings) => ({
+      ...defaultSettings,
+      ...settings,
+      integrations: settings.integrations
+        ? { ...defaultSettings.integrations, ...settings.integrations }
+        : defaultSettings.integrations
+    }));
     mockedApi.listFs.mockResolvedValue({
       path: "/Users/test",
       parent: "/Users",
@@ -268,6 +384,191 @@ describe("App", () => {
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
     expect(document.documentElement.dataset.themePreference).toBe("light");
     expect(window.localStorage.getItem("worktree-manager.theme")).toBe("light");
+  });
+
+  it("opens the command palette and runs a navigation command", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(await screen.findByText("Selecione um repositório para começar")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Comandos" }));
+    fireEvent.change(screen.getByLabelText("Pesquisar comandos"), {
+      target: { value: "config" }
+    });
+    fireEvent.keyDown(screen.getByLabelText("Pesquisar comandos"), { key: "Enter" });
+
+    await waitFor(() => expect(screen.queryByLabelText("Pesquisar comandos")).not.toBeInTheDocument());
+    expect(await screen.findByText("Diagnóstico local")).toBeInTheDocument();
+  });
+
+  it("opens a guided workflow and continues into the create worktree action", async () => {
+    mockedApi.listRepos.mockResolvedValue([
+      {
+        id: "repo-1",
+        name: "WorktreeManager",
+        path: "/tmp/WorktreeManager",
+        lastOpenedAt: "2026-07-01T10:00:00.000Z"
+      }
+    ]);
+    mockedApi.summary.mockResolvedValue({
+      repo: {
+        id: "repo-1",
+        name: "WorktreeManager",
+        path: "/tmp/WorktreeManager",
+        lastOpenedAt: "2026-07-01T10:00:00.000Z"
+      },
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: "/tmp/WorktreeManager",
+      currentBranch: "main",
+      commitCount: 42,
+      branchCount: 2,
+      worktreeCount: 2,
+      changedFileCount: 0,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.worktrees.mockResolvedValue([
+      {
+        id: "local",
+        path: "/tmp/WorktreeManager",
+        branch: "main",
+        head: "a1b2c3d",
+        isCurrent: true,
+        detached: false,
+        bare: false,
+        lastCommit: null
+      },
+      {
+        id: "feature",
+        path: "/tmp/WorktreeManager-feature",
+        branch: "feature/auth",
+        head: "d4e5f6g",
+        isCurrent: false,
+        detached: false,
+        bare: false,
+        lastCommit: null
+      }
+    ]);
+    mockedApi.branches.mockResolvedValue([
+      {
+        name: "main",
+        current: true,
+        upstream: "origin/main",
+        isRemote: false,
+        head: "a1b2c3d",
+        lastCommit: null
+      },
+      {
+        name: "feature/auth",
+        current: false,
+        upstream: "origin/feature/auth",
+        isRemote: false,
+        head: "d4e5f6g",
+        lastCommit: null
+      }
+    ]);
+
+    render(<App />);
+
+    await waitFor(() => expect(mockedApi.summary).toHaveBeenCalledWith("repo-1", undefined));
+    fireEvent.click(screen.getByRole("button", { name: "Workflows" }));
+
+    expect(await screen.findByText("Começar trabalho paralelo")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Abrir workflow" })[0]);
+    expect(await screen.findByRole("dialog", { name: "Começar trabalho paralelo" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Criar worktree" }));
+
+    expect(await screen.findByRole("dialog", { name: "Nova Worktree" })).toBeInTheDocument();
+  });
+
+  it("updates the safe Git mode setting", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("button", { name: "Desligado" }));
+
+    await waitFor(() => expect(mockedApi.updateSettings).toHaveBeenCalledWith({ safeMode: false }));
+  });
+
+  it("selects a preferred editor integration", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Integrações" }));
+    expect(await screen.findByText("Ferramentas externas para abrir worktrees")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Visual Studio Code/ }));
+
+    await waitFor(() =>
+      expect(mockedApi.updateSettings).toHaveBeenCalledWith({
+        integrations: {
+          editor: "vscode",
+          terminal: "auto"
+        }
+      })
+    );
+  });
+
+  it("shows and copies the diagnostics snapshot", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    mockedApi.listRepos.mockResolvedValue([]);
+    mockedApi.diagnostics.mockResolvedValue({
+      ...defaultDiagnostics,
+      repositoryCount: 2,
+      operationCount: 3,
+      operationStats: {
+        success: 2,
+        error: 1,
+        timedOut: 0,
+        averageDurationMs: 512,
+        p95DurationMs: 2450,
+        slowestDurationMs: 2450,
+        lastFailureAt: "2026-07-01T10:00:00.000Z"
+      },
+      recentFailures: [
+        {
+          id: "op-1",
+          command: "git",
+          args: ["pull", "--ff-only"],
+          cwd: "/tmp/WorktreeManager",
+          startedAt: "2026-07-01T10:00:00.000Z",
+          finishedAt: "2026-07-01T10:00:00.000Z",
+          status: "error",
+          exitCode: 1,
+          summary: "Not possible to fast-forward",
+          stdout: "",
+          stderr: "fatal: Not possible to fast-forward, aborting.",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          durationMs: 2450,
+          timeoutMs: 120000,
+          timedOut: false,
+          signal: null
+        }
+      ]
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    expect(await screen.findByText("Diagnóstico local")).toBeInTheDocument();
+    expect(screen.getByText("2 ok / 1 falhas")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copiar JSON" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain('"operationCount": 3');
+    expect(copied).toContain('"runtime": "node"');
   });
 
   it("expands detailed operation logs", async () => {

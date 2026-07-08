@@ -2,16 +2,24 @@ import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { OperationRecord, RepoRecord } from "../src/types";
+import type { AppSettings, OperationRecord, RepoRecord } from "../src/types";
 
 type AppState = {
   repos: RepoRecord[];
   operations: OperationRecord[];
+  settings: AppSettings;
 };
 
 const defaultState: AppState = {
   repos: [],
-  operations: []
+  operations: [],
+  settings: {
+    safeMode: true,
+    integrations: {
+      editor: "auto",
+      terminal: "auto"
+    }
+  }
 };
 
 export class AppStore {
@@ -21,6 +29,10 @@ export class AppStore {
     private readonly stateFile = path.join(process.cwd(), ".worktree-manager", "state.json"),
     private readonly fallbackStateFiles: string[] = []
   ) {}
+
+  stateFilePath(): string {
+    return this.stateFile;
+  }
 
   async listRepos(): Promise<RepoRecord[]> {
     const state = await this.readState();
@@ -44,6 +56,18 @@ export class AppStore {
     return this.updateState((state) => {
       state.repos = [repo, ...state.repos.filter((item) => item.id !== repo.id)].slice(0, 12);
       return repo;
+    });
+  }
+
+  async getSettings(): Promise<AppSettings> {
+    const state = await this.readState();
+    return state.settings;
+  }
+
+  async updateSettings(settings: Partial<AppSettings>): Promise<AppSettings> {
+    return this.updateState((state) => {
+      state.settings = normalizeSettings({ ...state.settings, ...settings });
+      return state.settings;
     });
   }
 
@@ -128,8 +152,48 @@ function parseState(contents: string): AppState {
   const parsed = JSON.parse(contents) as AppState;
   return {
     repos: Array.isArray(parsed.repos) ? parsed.repos : [],
-    operations: Array.isArray(parsed.operations) ? parsed.operations : []
+    operations: Array.isArray(parsed.operations) ? parsed.operations : [],
+    settings: normalizeSettings(parsed.settings)
   };
+}
+
+function normalizeSettings(value: unknown): AppSettings {
+  const settings = value as Partial<AppSettings> | null;
+  return {
+    safeMode: typeof settings?.safeMode === "boolean" ? settings.safeMode : true,
+    integrations: {
+      editor: isEditorIntegration(settings?.integrations?.editor)
+        ? settings.integrations.editor
+        : "auto",
+      terminal: isTerminalIntegration(settings?.integrations?.terminal)
+        ? settings.integrations.terminal
+        : "auto"
+    }
+  };
+}
+
+function isEditorIntegration(value: unknown): value is AppSettings["integrations"]["editor"] {
+  return (
+    value === "auto" ||
+    value === "vscode" ||
+    value === "cursor" ||
+    value === "windsurf" ||
+    value === "zed" ||
+    value === "sublime"
+  );
+}
+
+function isTerminalIntegration(value: unknown): value is AppSettings["integrations"]["terminal"] {
+  return (
+    value === "auto" ||
+    value === "system" ||
+    value === "iterm" ||
+    value === "warp" ||
+    value === "windows-terminal" ||
+    value === "x-terminal-emulator" ||
+    value === "gnome-terminal" ||
+    value === "konsole"
+  );
 }
 
 function defaultStateFile(): string {

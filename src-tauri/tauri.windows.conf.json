@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "targets": ["nsis", "msi"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true
+      },
+      "wix": {
+        "language": "en-US"
+      }
+    }
+  }
+}

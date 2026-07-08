@@ -1,19 +1,26 @@
 import type {
   BranchRecord,
+  DiagnosticEventInput,
+  DiagnosticsSnapshot,
   FsListResponse,
+  IntegrationCatalog,
   RepoDetail,
   LocalBranchWorktreeResult,
   OpenTarget,
+  AppSettings,
   OperationRecord,
   RepoRecord,
   RepoSummary,
   WorktreeHandoffResult,
   WorktreeRecord
 } from "./types";
+import { isTauriRuntime, tauriApi } from "./tauriApi";
 import { visualApi } from "./visualApi";
 
+const API_BASE_URL = readApiBaseUrl();
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(`${API_BASE_URL}${url}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -48,6 +55,27 @@ const httpApi = {
     return request<RepoRecord>("/api/repos", {
       method: "POST",
       body: JSON.stringify({ path })
+    });
+  },
+  getSettings() {
+    return request<AppSettings>("/api/settings");
+  },
+  updateSettings(settings: Partial<AppSettings>) {
+    return request<AppSettings>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(settings)
+    });
+  },
+  integrations() {
+    return request<IntegrationCatalog>("/api/integrations");
+  },
+  diagnostics() {
+    return request<DiagnosticsSnapshot>("/api/diagnostics");
+  },
+  recordDiagnosticEvent(event: DiagnosticEventInput) {
+    return request<OperationRecord>("/api/diagnostics/events", {
+      method: "POST",
+      body: JSON.stringify(event)
     });
   },
   summary(repoId: string, worktreePath?: string) {
@@ -135,7 +163,7 @@ const httpApi = {
   }
 };
 
-export const api = isVisualMode() ? visualApi : httpApi;
+export const api = isVisualMode() ? visualApi : isTauriRuntime() ? tauriApi : httpApi;
 
 function withWorktreeQuery(url: string, worktreePath?: string) {
   if (!worktreePath) return url;
@@ -144,4 +172,9 @@ function withWorktreeQuery(url: string, worktreePath?: string) {
 
 function isVisualMode() {
   return typeof window !== "undefined" && new URLSearchParams(window.location.search).has("visual");
+}
+
+function readApiBaseUrl() {
+  const configuredUrl = import.meta.env.VITE_API_BASE_URL;
+  return typeof configuredUrl === "string" ? configuredUrl.replace(/\/+$/, "") : "";
 }

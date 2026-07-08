@@ -139,6 +139,75 @@ export type OperationRecord = {
 
 export type OpenTarget = "folder" | "editor" | "terminal";
 
+export type EditorIntegrationId = "auto" | "vscode" | "cursor" | "windsurf" | "zed" | "sublime";
+
+export type TerminalIntegrationId =
+  | "auto"
+  | "system"
+  | "iterm"
+  | "warp"
+  | "windows-terminal"
+  | "x-terminal-emulator"
+  | "gnome-terminal"
+  | "konsole";
+
+export type AppIntegrations = {
+  editor: EditorIntegrationId;
+  terminal: TerminalIntegrationId;
+};
+
+export type AppSettings = {
+  safeMode: boolean;
+  integrations: AppIntegrations;
+};
+
+export type IntegrationRecord<TId extends string = string> = {
+  id: TId;
+  kind: "editor" | "terminal";
+  label: string;
+  description: string;
+  available: boolean;
+  selected: boolean;
+  command: string | null;
+};
+
+export type IntegrationCatalog = {
+  editors: IntegrationRecord<EditorIntegrationId>[];
+  terminals: IntegrationRecord<TerminalIntegrationId>[];
+  settings: AppIntegrations;
+};
+
+export type OperationStats = {
+  success: number;
+  error: number;
+  timedOut: number;
+  averageDurationMs: number;
+  p95DurationMs: number;
+  slowestDurationMs: number;
+  lastFailureAt: string | null;
+};
+
+export type DiagnosticsSnapshot = {
+  generatedAt: string;
+  appVersion: string;
+  runtime: "node" | "tauri" | "visual";
+  platform: string;
+  statePath?: string;
+  repositoryCount: number;
+  operationCount: number;
+  operationStats: OperationStats;
+  recentFailures: OperationRecord[];
+  settings: AppSettings;
+};
+
+export type DiagnosticEventInput = {
+  level: "info" | "warning" | "error";
+  name: string;
+  message: string;
+  detail?: string;
+  context?: Record<string, unknown>;
+};
+
 export type ApiError = {
   error: string;
   detail?: string;

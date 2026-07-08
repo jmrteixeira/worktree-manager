@@ -38,6 +38,17 @@ type StashHandle = {
   message: string;
 };
 
+type WorktreeCreateOptions = {
+  branch: string;
+  newBranch: boolean;
+  name?: string | null;
+  path?: string | null;
+};
+
+type BranchSource =
+  | { kind: "local"; branch: string }
+  | { kind: "remote"; branch: string; localBranch: string };
+
 const MAX_OPERATION_LOG_CHARS = 20_000;
 
 export class GitCommandError extends Error {
@@ -245,7 +256,7 @@ export function parseStatusPorcelain(stdout: string): GitFileStatus[] {
     .map((line) => {
       if (line.startsWith("?? ")) {
         return {
-          path: line.slice(3),
+          path: decodeGitPath(line.slice(3)),
           originalPath: null,
           indexStatus: "?",
           worktreeStatus: "?",
@@ -257,8 +268,8 @@ export function parseStatusPorcelain(stdout: string): GitFileStatus[] {
       const worktreeStatus = line[1] || " ";
       const rawPath = line.slice(3);
       const renameParts = rawPath.split(" -> ");
-      const originalPath = renameParts.length > 1 ? renameParts[0] : null;
-      const filePath = renameParts.length > 1 ? renameParts.slice(1).join(" -> ") : rawPath;
+      const originalPath = renameParts.length > 1 ? decodeGitPath(renameParts[0]) : null;
+      const filePath = decodeGitPath(renameParts.length > 1 ? renameParts.slice(1).join(" -> ") : rawPath);
 
       return {
         path: filePath,
@@ -268,6 +279,24 @@ export function parseStatusPorcelain(stdout: string): GitFileStatus[] {
         label: fileStatusLabel(indexStatus, worktreeStatus)
       } satisfies GitFileStatus;
     });
+}
+
+function decodeGitPath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) {
+    return trimmed;
+  }
+
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    return trimmed
+      .slice(1, -1)
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\")
+      .replace(/\\t/g, "\t")
+      .replace(/\\n/g, "\n");
+  }
 }
 
 export async function resolveRepoWorktreePath(
@@ -284,6 +313,141 @@ export async function resolveRepoWorktreePath(
   }
 
   return match.path;
+}
+
+export async function assertCleanWorktreeForSafeOperation(
+  worktreePath: string,
+  operationLabel: string,
+  store?: AppStore
+): Promise<void> {
+  const status = await getWorktreeStatusSummary(worktreePath, store);
+  if (status.conflicted > 0) {
+    throw new Error(
+      `Modo seguro: ${operationLabel} bloqueado porque a worktree tem ${formatSafeConflictCount(status.conflicted)}.`
+    );
+  }
+
+  if (!status.clean) {
+    throw new Error(
+      `Modo seguro: ${operationLabel} bloqueado porque a worktree tem ${formatSafeChangeCount(status.total)} não commitadas.`
+    );
+  }
+}
+
+export async function assertNoConflictsForSafeOperation(
+  worktreePath: string,
+  operationLabel: string,
+  store?: AppStore
+): Promise<void> {
+  const status = await getWorktreeStatusSummary(worktreePath, store);
+  if (status.conflicted > 0) {
+    throw new Error(
+      `Modo seguro: ${operationLabel} bloqueado porque a worktree tem ${formatSafeConflictCount(status.conflicted)}.`
+    );
+  }
+}
+
+export async function assertSafeBranchDeletion(
+  repoPath: string,
+  branchName: string,
+  store?: AppStore
+): Promise<void> {
+  if (isProtectedBranch(branchName)) {
+    throw new Error(`Modo seguro: não é possível apagar a branch protegida "${branchName}".`);
+  }
+
+  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store, {
+    record: false
+  });
+  const checkedOutWorktree = parseWorktreePorcelain(porcelain.stdout, repoPath).find(
+    (worktree) => worktree.branch === branchName
+  );
+
+  if (checkedOutWorktree) {
+    throw new Error(
+      `Modo seguro: não é possível apagar "${branchName}" porque está checked out em ${checkedOutWorktree.path}.`
+    );
+  }
+}
+
+export async function createWorktree(
+  repo: Pick<RepoRecord, "name" | "path">,
+  options: WorktreeCreateOptions,
+  store?: AppStore
+): Promise<string> {
+  const branch = options.branch.trim();
+  if (!branch) {
+    throw new Error("Campo obrigatório em falta: branch.");
+  }
+
+  const targetPath = options.path
+    ? path.resolve(options.path)
+    : path.join(
+        path.dirname(repo.path),
+        options.name ? sanitizeFilePart(options.name) : defaultWorktreeName(repo.name, branch)
+      );
+
+  if (await pathExists(targetPath)) {
+    throw new Error(`Já existe uma pasta com esse nome: ${targetPath}`);
+  }
+
+  let args: string[];
+  if (options.newBranch) {
+    await assertValidBranchName(repo.path, branch, store);
+    await assertBranchDoesNotExist(repo.path, branch, store);
+    args = ["worktree", "add", "-b", branch, targetPath];
+  } else {
+    const source = await resolveBranchSource(repo.path, branch, store);
+    if (source.kind === "local") {
+      await assertBranchAvailableForCheckout(repo.path, source.branch, null, store);
+      args = ["worktree", "add", targetPath, source.branch];
+    } else {
+      await assertBranchAvailableForCheckout(repo.path, source.localBranch, null, store);
+      args = ["worktree", "add", "-b", source.localBranch, "--track", targetPath, source.branch];
+    }
+  }
+
+  await runGit(repo.path, args, store, { timeoutMs: 120_000 });
+  return targetPath;
+}
+
+export async function createBranch(
+  repoPath: string,
+  name: string,
+  from?: string | null,
+  store?: AppStore
+): Promise<string> {
+  const branchName = name.trim();
+  await assertValidBranchName(repoPath, branchName, store);
+  await assertBranchDoesNotExist(repoPath, branchName, store);
+
+  const startPoint = from?.trim();
+  if (!startPoint) {
+    await runGit(repoPath, ["branch", branchName], store);
+    return branchName;
+  }
+
+  const remoteExists = await remoteBranchExists(repoPath, startPoint, store);
+  await assertRefExists(repoPath, startPoint, store);
+  await runGit(
+    repoPath,
+    remoteExists ? ["branch", "--track", branchName, startPoint] : ["branch", branchName, startPoint],
+    store
+  );
+  return branchName;
+}
+
+export async function checkoutBranch(
+  repoPath: string,
+  branchName: string,
+  worktreePath: string,
+  store?: AppStore
+): Promise<string> {
+  const branch = branchName.trim();
+  await assertLocalBranchExists(repoPath, branch, store);
+  await assertBranchAvailableForCheckout(repoPath, branch, worktreePath, store);
+  await runGit(worktreePath, ["switch", branch], store);
+  return branch;
 }
 
 export async function handoffWorktreeBranchToLocal(
@@ -346,7 +510,8 @@ export async function handoffWorktreeBranchToLocal(
 export async function moveLocalBranchToWorktree(
   repo: Pick<RepoRecord, "name" | "path">,
   options: { name?: string | null; path?: string | null } = {},
-  store?: AppStore
+  store?: AppStore,
+  runtimeOptions: { safeMode?: boolean } = {}
 ): Promise<LocalBranchWorktreeResult> {
   const branch = await getCheckedOutBranch(repo.path, store);
   if (!branch) {
@@ -407,6 +572,10 @@ export async function moveLocalBranchToWorktree(
     : null;
   const finalWorktreePath = reusableWorktree?.path ?? preferredWorktreePath;
   let worktreeStash: StashHandle | null = null;
+
+  if (runtimeOptions.safeMode && reusableWorktree) {
+    await assertNoConflictsForSafeOperation(finalWorktreePath, "mover para worktree", store);
+  }
 
   try {
     await runGit(repo.path, ["switch", baseBranch], store);
@@ -651,6 +820,102 @@ async function getCheckedOutBranch(repoPath: string, store?: AppStore): Promise<
   return branchName || null;
 }
 
+async function assertValidBranchName(repoPath: string, branchName: string, store?: AppStore): Promise<void> {
+  if (!branchName) {
+    throw new Error("O nome da branch não pode estar vazio.");
+  }
+
+  const result = await runGit(repoPath, ["check-ref-format", "--branch", branchName], store, {
+    allowFailure: true,
+    record: false
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`Nome de branch inválido: ${branchName}`);
+  }
+}
+
+async function assertBranchDoesNotExist(repoPath: string, branchName: string, store?: AppStore): Promise<void> {
+  if (await localBranchExists(repoPath, branchName, store)) {
+    throw new Error(`A branch local "${branchName}" já existe.`);
+  }
+}
+
+async function assertLocalBranchExists(repoPath: string, branchName: string, store?: AppStore): Promise<void> {
+  if (!(await localBranchExists(repoPath, branchName, store))) {
+    throw new Error(`A branch local "${branchName}" não existe.`);
+  }
+}
+
+async function assertRefExists(repoPath: string, refName: string, store?: AppStore): Promise<void> {
+  const result = await runGit(repoPath, ["rev-parse", "--verify", "--quiet", refName], store, {
+    allowFailure: true,
+    record: false
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`A referência "${refName}" não existe.`);
+  }
+}
+
+async function resolveBranchSource(repoPath: string, branchName: string, store?: AppStore): Promise<BranchSource> {
+  if (await localBranchExists(repoPath, branchName, store)) {
+    return { kind: "local", branch: branchName };
+  }
+
+  if (await remoteBranchExists(repoPath, branchName, store)) {
+    const localBranch = localBranchNameFromRemote(branchName);
+    await assertValidBranchName(repoPath, localBranch, store);
+    if (await localBranchExists(repoPath, localBranch, store)) {
+      return { kind: "local", branch: localBranch };
+    }
+    return { kind: "remote", branch: branchName, localBranch };
+  }
+
+  throw new Error(`A branch ou ref "${branchName}" não existe.`);
+}
+
+async function localBranchExists(repoPath: string, branchName: string, store?: AppStore): Promise<boolean> {
+  return refExists(repoPath, `refs/heads/${branchName}`, store);
+}
+
+async function remoteBranchExists(repoPath: string, branchName: string, store?: AppStore): Promise<boolean> {
+  if (branchName.endsWith("/HEAD")) return false;
+  return refExists(repoPath, `refs/remotes/${branchName}`, store);
+}
+
+async function refExists(repoPath: string, fullRef: string, store?: AppStore): Promise<boolean> {
+  const result = await runGit(repoPath, ["show-ref", "--verify", "--quiet", fullRef], store, {
+    allowFailure: true,
+    record: false
+  });
+  return result.exitCode === 0;
+}
+
+async function assertBranchAvailableForCheckout(
+  repoPath: string,
+  branchName: string,
+  targetPath: string | null,
+  store?: AppStore
+): Promise<void> {
+  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store, {
+    record: false
+  });
+  const target = targetPath ? path.resolve(targetPath) : null;
+  const occupied = parseWorktreePorcelain(porcelain.stdout, targetPath ?? repoPath).find((worktree) => {
+    if (worktree.branch !== branchName) return false;
+    if (!target) return true;
+    return path.resolve(worktree.path) !== target;
+  });
+
+  if (occupied) {
+    throw new Error(`A branch "${branchName}" já está checked out em ${occupied.path}.`);
+  }
+}
+
+function localBranchNameFromRemote(remoteBranch: string): string {
+  const [, ...rest] = remoteBranch.split("/");
+  return rest.join("/") || remoteBranch;
+}
+
 async function getLocalBaseBranch(repoPath: string, store?: AppStore): Promise<string | null> {
   const refs = await runGit(
     repoPath,
@@ -720,6 +985,13 @@ async function hasLocalChanges(repoPath: string, store?: AppStore): Promise<bool
     record: false
   });
   return Boolean(status.stdout.trim());
+}
+
+async function getWorktreeStatusSummary(repoPath: string, store?: AppStore): Promise<GitStatusSummary> {
+  const status = await runGit(repoPath, ["status", "--porcelain=v1", "-uall"], store, {
+    record: false
+  });
+  return summarizeFileStatuses(parseStatusPorcelain(status.stdout));
 }
 
 async function getStashCount(repoPath: string, store?: AppStore): Promise<number> {
@@ -809,6 +1081,10 @@ function isBaseBranch(branch: string): boolean {
   return branch === "main" || branch === "master";
 }
 
+function isProtectedBranch(branch: string): boolean {
+  return branch === "main" || branch === "master";
+}
+
 function summarizeFileStatuses(files: GitFileStatus[]): GitStatusSummary {
   const summary = files.reduce<GitStatusSummary>(
     (totals, file) => {
@@ -848,6 +1124,14 @@ function fileStatusLabel(indexStatus: string, worktreeStatus: string): string {
   if (indexStatus === "D" || worktreeStatus === "D") return "Removido";
   if (indexStatus === "M" || worktreeStatus === "M") return "Modificado";
   return "Alterado";
+}
+
+function formatSafeChangeCount(count: number): string {
+  return count === 1 ? "1 alteração" : `${count} alterações`;
+}
+
+function formatSafeConflictCount(count: number): string {
+  return count === 1 ? "1 conflito" : `${count} conflitos`;
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {

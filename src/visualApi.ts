@@ -1,8 +1,12 @@
 import type {
   BranchRecord,
+  DiagnosticEventInput,
+  DiagnosticsSnapshot,
   FsListResponse,
+  IntegrationCatalog,
   LocalBranchWorktreeResult,
   OpenTarget,
+  AppSettings,
   OperationRecord,
   RepoDetail,
   RepoRecord,
@@ -156,7 +160,7 @@ const branches: BranchRecord[] = [
   }
 ];
 
-const operations: OperationRecord[] = [
+let operations: OperationRecord[] = [
   {
     id: "visual-op-1",
     command: "git",
@@ -197,6 +201,14 @@ const operations: OperationRecord[] = [
   }
 ];
 
+let settings: AppSettings = {
+  safeMode: true,
+  integrations: {
+    editor: "auto",
+    terminal: "auto"
+  }
+};
+
 export const visualApi = {
   async listFs(): Promise<FsListResponse> {
     return {
@@ -218,6 +230,127 @@ export const visualApi = {
   },
   async addRepo(): Promise<RepoRecord> {
     return repo;
+  },
+  async getSettings(): Promise<AppSettings> {
+    return settings;
+  },
+  async updateSettings(nextSettings: Partial<AppSettings>): Promise<AppSettings> {
+    settings = {
+      ...settings,
+      ...nextSettings,
+      integrations: nextSettings.integrations
+        ? { ...settings.integrations, ...nextSettings.integrations }
+        : settings.integrations
+    };
+    return settings;
+  },
+  async integrations(): Promise<IntegrationCatalog> {
+    return {
+      settings: settings.integrations,
+      editors: [
+        {
+          id: "auto",
+          kind: "editor",
+          label: "Auto",
+          description: "Usa o comportamento padrão da aplicação.",
+          available: true,
+          selected: settings.integrations.editor === "auto",
+          command: null
+        },
+        {
+          id: "vscode",
+          kind: "editor",
+          label: "Visual Studio Code",
+          description: "Abre worktrees com o comando code.",
+          available: true,
+          selected: settings.integrations.editor === "vscode",
+          command: "code"
+        },
+        {
+          id: "cursor",
+          kind: "editor",
+          label: "Cursor",
+          description: "Abre worktrees com o comando cursor.",
+          available: true,
+          selected: settings.integrations.editor === "cursor",
+          command: "cursor"
+        },
+        {
+          id: "zed",
+          kind: "editor",
+          label: "Zed",
+          description: "Abre worktrees com o comando zed.",
+          available: false,
+          selected: settings.integrations.editor === "zed",
+          command: "zed"
+        }
+      ],
+      terminals: [
+        {
+          id: "auto",
+          kind: "terminal",
+          label: "Auto",
+          description: "Usa o comportamento padrão da aplicação.",
+          available: true,
+          selected: settings.integrations.terminal === "auto",
+          command: null
+        },
+        {
+          id: "system",
+          kind: "terminal",
+          label: "Terminal do sistema",
+          description: "Usa Terminal, cmd.exe ou x-terminal-emulator.",
+          available: true,
+          selected: settings.integrations.terminal === "system",
+          command: null
+        },
+        {
+          id: "iterm",
+          kind: "terminal",
+          label: "iTerm",
+          description: "Abre worktrees no iTerm em macOS.",
+          available: true,
+          selected: settings.integrations.terminal === "iterm",
+          command: "open -a iTerm"
+        },
+        {
+          id: "warp",
+          kind: "terminal",
+          label: "Warp",
+          description: "Abre worktrees no Warp.",
+          available: false,
+          selected: settings.integrations.terminal === "warp",
+          command: "open -a Warp"
+        }
+      ]
+    };
+  },
+  async diagnostics(): Promise<DiagnosticsSnapshot> {
+    return buildVisualDiagnostics();
+  },
+  async recordDiagnosticEvent(event: DiagnosticEventInput): Promise<OperationRecord> {
+    const now = new Date().toISOString();
+    const record: OperationRecord = {
+      id: `visual-op-${operations.length + 1}`,
+      command: "app",
+      args: ["diagnostic", event.level, event.name],
+      cwd: "worktree-manager",
+      startedAt: now,
+      finishedAt: now,
+      status: event.level === "error" ? "error" : "success",
+      exitCode: event.level === "error" ? 1 : 0,
+      summary: event.message,
+      stdout: event.context ? JSON.stringify(event.context, null, 2) : "",
+      stderr: event.detail ?? "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      durationMs: 0,
+      timeoutMs: 0,
+      timedOut: false,
+      signal: null
+    };
+    operations = [record, ...operations].slice(0, 60);
+    return record;
   },
   async summary(_repoId: string, worktreePath?: string): Promise<RepoSummary> {
     const focused = worktreeForPath(worktreePath ?? authPath);
@@ -339,4 +472,35 @@ export const visualApi = {
 
 function worktreeForPath(worktreePath: string): WorktreeRecord {
   return worktrees.find((worktree) => worktree.path === worktreePath) ?? worktrees[1];
+}
+
+function buildVisualDiagnostics(): DiagnosticsSnapshot {
+  const durations = operations
+    .map((operation) => operation.durationMs)
+    .filter((duration): duration is number => typeof duration === "number")
+    .sort((left, right) => left - right);
+  const failures = operations.filter((operation) => operation.status === "error");
+
+  return {
+    generatedAt: new Date().toISOString(),
+    appVersion: "1.0.0",
+    runtime: "visual",
+    platform: "visual",
+    statePath: "/Users/demo/Library/Application Support/Worktree Manager/state.json",
+    repositoryCount: 1,
+    operationCount: operations.length,
+    operationStats: {
+      success: operations.filter((operation) => operation.status === "success").length,
+      error: failures.length,
+      timedOut: operations.filter((operation) => operation.timedOut).length,
+      averageDurationMs: durations.length
+        ? Math.round(durations.reduce((total, duration) => total + duration, 0) / durations.length)
+        : 0,
+      p95DurationMs: durations.length ? durations[Math.ceil(0.95 * durations.length) - 1] : 0,
+      slowestDurationMs: durations.at(-1) ?? 0,
+      lastFailureAt: failures[0]?.finishedAt ?? null
+    },
+    recentFailures: failures.slice(0, 5),
+    settings
+  };
 }

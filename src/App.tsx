@@ -1,10 +1,12 @@
-import { Fragment, FormEvent, ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, ErrorInfo, Fragment, FormEvent, KeyboardEvent, ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Command as CommandIcon,
   Code2,
   Copy,
   Folder,
@@ -17,10 +19,13 @@ import {
   Monitor,
   MoreVertical,
   Moon,
+  Plug,
   Plus,
   RefreshCcw,
   Settings,
   Search,
+  ShieldCheck,
+  ShieldOff,
   Sun,
   TerminalSquare,
   Trash2,
@@ -29,10 +34,14 @@ import {
 import { api } from "./api";
 import type {
   BranchRecord,
+  DiagnosticsSnapshot,
   FsEntry,
   FsListResponse,
   GitStatusSummary,
+  IntegrationCatalog,
+  IntegrationRecord,
   OpenTarget,
+  AppSettings,
   OperationRecord,
   RepoDetail,
   RepoRecord,
@@ -46,6 +55,7 @@ type DialogState =
   | { kind: "create-branch" }
   | { kind: "delete-worktree"; worktree: WorktreeRecord }
   | { kind: "delete-branch"; branch: BranchRecord }
+  | { kind: "guided-workflow"; workflowId: GuidedWorkflowId }
   | SensitiveActionDialogState
   | null;
 
@@ -64,17 +74,101 @@ type RepoSummaryMap = Record<string, RepoSummary>;
 type RepoErrorMap = Record<string, string>;
 type FocusedWorktreeMap = Record<string, string>;
 type ThemePreference = "dark" | "light" | "system";
-type AppPage = "dashboard" | "detail" | "worktrees" | "branches" | "operations" | "settings";
+type AppPage =
+  | "dashboard"
+  | "detail"
+  | "workflows"
+  | "worktrees"
+  | "branches"
+  | "operations"
+  | "integrations"
+  | "settings";
 type WorktreeFilter = "all" | "current" | "dirty" | "clean" | "ahead" | "behind" | "detached";
 type BranchFilter = "all" | "local" | "remote" | "current" | "ahead" | "behind" | "no-upstream";
 type OperationFilter = "all" | "success" | "error" | "timeout";
+type GuidedWorkflowId =
+  | "parallel-worktree"
+  | "handoff-local"
+  | "local-to-worktree"
+  | "sync-focused"
+  | "review-changes";
+type WorkflowStatusTone = "ready" | "attention" | "blocked";
+type GuidedWorkflowDefinition = {
+  id: GuidedWorkflowId;
+  title: string;
+  description: string;
+  section: string;
+  icon: ReactNode;
+  status: WorkflowStatusTone;
+  statusLabel: string;
+  steps: string[];
+  requirements: string[];
+  primaryLabel: string;
+  secondaryLabel?: string;
+  disabled?: boolean;
+};
+type GuidedWorkflowRunOptions = {
+  worktreeId?: string;
+};
+type CommandPaletteAction = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  section: string;
+  keywords?: string[];
+  shortcut?: string;
+  icon: ReactNode;
+  run: () => void;
+};
+type ToastRecord = {
+  id: string;
+  tone: "success" | "error" | "info";
+  title: string;
+  detail?: string;
+};
 
 const ACTIVE_REPOS_STORAGE_KEY = "worktree-manager.activeRepoIds";
 const FOCUSED_WORKTREES_STORAGE_KEY = "worktree-manager.focusedWorktreePaths";
 const THEME_STORAGE_KEY = "worktree-manager.theme";
 const DEFAULT_PAGE: AppPage = "dashboard";
 
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Erro de UI capturado", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <AppCrashFallback
+          message={this.state.error.message}
+          onRetry={() => this.setState({ error: null })}
+        />
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export function App() {
+  return (
+    <AppErrorBoundary>
+      <WorktreeManagerApp />
+    </AppErrorBoundary>
+  );
+}
+
+function WorktreeManagerApp() {
   const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [workspaceRepoIds, setWorkspaceRepoIds] = useState<string[]>([]);
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
@@ -84,20 +178,33 @@ export function App() {
   const [worktrees, setWorktrees] = useState<WorktreeRecord[]>([]);
   const [branches, setBranches] = useState<BranchRecord[]>([]);
   const [operations, setOperations] = useState<OperationRecord[]>([]);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
+  const [integrationCatalog, setIntegrationCatalog] = useState<IntegrationCatalog | null>(null);
   const [detail, setDetail] = useState<RepoDetail | null>(null);
   const [detailWorktreePath, setDetailWorktreePath] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
+  const [settings, setSettings] = useState<AppSettings>({
+    safeMode: true,
+    integrations: {
+      editor: "auto",
+      terminal: "auto"
+    }
+  });
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [activePage, setActivePage] = useState<AppPage>(() => readPageFromHash());
   const refreshRequestId = useRef(0);
   const skipNextWorkspaceRefresh = useRef(false);
+  const toastId = useRef(0);
 
   const selectedRepo = useMemo(
     () => repos.find((repo) => repo.id === selectedRepoId) ?? null,
@@ -163,6 +270,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    }
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
     persistThemePreference(themePreference);
     return applyThemePreference(themePreference);
   }, [themePreference]);
@@ -206,8 +327,15 @@ export function App() {
   }, [activePage, detailWorktreePath, focusedWorktreePaths, selectedRepo?.path, selectedRepoId, workspaceHydrated]);
 
   async function loadInitialState() {
+    setLoading(true);
     try {
-      const [repoList, operationList] = await Promise.all([api.listRepos(), api.operations()]);
+      const [repoList, operationList, appSettings, integrations, diagnosticsSnapshot] = await Promise.all([
+        api.listRepos(),
+        api.operations(),
+        api.getSettings(),
+        api.integrations(),
+        api.diagnostics()
+      ]);
       const storedActiveIds = readWorkspaceRepoIds().filter((repoId) =>
         repoList.some((repo) => repo.id === repoId)
       );
@@ -218,14 +346,31 @@ export function App() {
           : [];
       setRepos(repoList);
       setOperations(operationList);
+      setSettings(appSettings);
+      setIntegrationCatalog(integrations);
+      setDiagnostics(diagnosticsSnapshot);
       setFocusedWorktreePaths(readFocusedWorktreePaths(repoList.map((repo) => repo.id)));
       setWorkspaceRepoIds(initialActiveIds);
       setSelectedRepoId(initialActiveIds[0] ?? null);
       setWorkspaceHydrated(true);
       if (!repoList.length) setDialog({ kind: "repo-picker" });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Arranque falhou", detail: message });
+    } finally {
+      setLoading(false);
     }
+  }
+
+  function notify(toast: Omit<ToastRecord, "id">, durationMs = 3_800) {
+    const id = `toast-${++toastId.current}`;
+    setToasts((items) => [...items, { ...toast, id }].slice(-4));
+    window.setTimeout(() => dismissToast(id), durationMs);
+  }
+
+  function dismissToast(id: string) {
+    setToasts((items) => items.filter((toast) => toast.id !== id));
   }
 
   async function refreshDashboard(
@@ -257,7 +402,7 @@ export function App() {
         return Promise.all([api.worktrees(repoId), api.branches(repoId)]);
       });
 
-      const [summaryResults, nextOperations] = await Promise.all([
+      const [summaryResults, nextOperations, diagnosticsSnapshot] = await Promise.all([
         Promise.all(
           repoIds.map(async (activeRepoId) => {
             try {
@@ -275,7 +420,8 @@ export function App() {
             }
           })
         ),
-        api.operations()
+        api.operations(),
+        api.diagnostics()
       ]);
 
       if (requestId !== refreshRequestId.current) return;
@@ -301,9 +447,12 @@ export function App() {
       setWorktrees(nextWorktrees);
       setBranches(nextBranches);
       setOperations(nextOperations);
+      setDiagnostics(diagnosticsSnapshot);
     } catch (caught) {
       if (requestId !== refreshRequestId.current) return;
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Atualização falhou", detail: message });
     } finally {
       if (requestId === refreshRequestId.current) {
         setLoading(false);
@@ -346,8 +495,13 @@ export function App() {
       setFocusedWorktreePaths((focusMap) => ({ ...focusMap, [repo.id]: repo.path }));
       setSelectedRepoId(repo.id);
       setDialog(null);
+      setDiagnostics(await api.diagnostics());
+      notify({ tone: "success", title: "Repositório adicionado", detail: repo.name });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Não foi possível adicionar", detail: message });
+      await recordUiError("select_repository_failed", message, { path });
     } finally {
       setActionLoading(null);
     }
@@ -360,8 +514,12 @@ export function App() {
     try {
       await action();
       await refreshDashboard(selectedRepoId, workspaceRepoIds, focusedWorktreePaths);
+      notify({ tone: "success", title: "Ação concluída", detail: label });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Ação falhou", detail: message });
+      await recordUiError("action_failed", message, { label });
     } finally {
       setActionLoading(null);
     }
@@ -372,8 +530,12 @@ export function App() {
     setError(null);
     try {
       await action();
+      notify({ tone: "success", title: "Ação concluída", detail: label });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Ação falhou", detail: message });
+      await recordUiError("external_action_failed", message, { label });
     } finally {
       setActionLoading(null);
     }
@@ -385,6 +547,59 @@ export function App() {
 
   function requestSensitiveAction(action: Omit<SensitiveActionDialogState, "kind">) {
     setDialog({ kind: "sensitive-action", ...action });
+  }
+
+  async function updateSafeMode(safeMode: boolean) {
+    setActionLoading("settings");
+    setError(null);
+    try {
+      const nextSettings = await api.updateSettings({ safeMode });
+      setSettings(nextSettings);
+      setDiagnostics(await api.diagnostics());
+      notify({ tone: "success", title: "Modo seguro atualizado", detail: safeMode ? "Ativo" : "Desligado" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Configuração falhou", detail: message });
+      await recordUiError("update_settings_failed", message, { safeMode });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function refreshIntegrations() {
+    setActionLoading("integrations");
+    setError(null);
+    try {
+      setIntegrationCatalog(await api.integrations());
+      notify({ tone: "success", title: "Integrações atualizadas" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Deteção falhou", detail: message });
+      await recordUiError("refresh_integrations_failed", message);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function updateIntegrations(nextIntegrations: AppSettings["integrations"]) {
+    setActionLoading("integrations");
+    setError(null);
+    try {
+      const nextSettings = await api.updateSettings({ integrations: nextIntegrations });
+      const nextCatalog = await api.integrations();
+      setSettings(nextSettings);
+      setIntegrationCatalog(nextCatalog);
+      notify({ tone: "success", title: "Integração guardada" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Integração falhou", detail: message });
+      await recordUiError("update_integrations_failed", message, nextIntegrations);
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   function confirmBranchCheckout(branch: BranchRecord) {
@@ -561,8 +776,12 @@ export function App() {
       const nextFocusMap = { ...focusedWorktreePaths, [repoId]: result.localPath };
       setFocusedWorktreePaths(nextFocusMap);
       await refreshDashboard(repoId, repoIds, nextFocusMap);
+      notify({ tone: "success", title: "Handoff concluído", detail: result.branch });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Handoff falhou", detail: message });
+      await recordUiError("handoff_worktree_to_local_failed", message, { repoId, worktree: worktree.path });
     } finally {
       setActionLoading(null);
     }
@@ -580,8 +799,12 @@ export function App() {
       const nextFocusMap = { ...focusedWorktreePaths, [repoId]: result.localPath };
       setFocusedWorktreePaths(nextFocusMap);
       await refreshDashboard(repoId, repoIds, nextFocusMap);
+      notify({ tone: "success", title: "Branch movida para worktree", detail: result.branch });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Handoff falhou", detail: message });
+      await recordUiError("move_local_branch_to_worktree_failed", message, { repoId });
     } finally {
       setActionLoading(null);
     }
@@ -603,7 +826,14 @@ export function App() {
         refreshDetail(repoId, currentDetailPath)
       ]);
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Detalhe falhou", detail: message });
+      await recordUiError("detail_action_failed", message, {
+        label,
+        repoId,
+        worktreePath: currentDetailPath ?? null
+      });
     } finally {
       setActionLoading(null);
     }
@@ -613,11 +843,79 @@ export function App() {
     setLoading(true);
     setError(null);
     try {
-      setOperations(await api.operations());
+      const [nextOperations, diagnosticsSnapshot] = await Promise.all([
+        api.operations(),
+        api.diagnostics()
+      ]);
+      setOperations(nextOperations);
+      setDiagnostics(diagnosticsSnapshot);
+      notify({ tone: "success", title: "Operações atualizadas" });
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Atualização falhou", detail: message });
+      await recordUiError("refresh_operations_failed", message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshDiagnostics() {
+    setActionLoading("diagnostics");
+    setError(null);
+    try {
+      setDiagnostics(await api.diagnostics());
+      notify({ tone: "success", title: "Diagnóstico atualizado" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Diagnóstico falhou", detail: message });
+      await recordUiError("refresh_diagnostics_failed", message);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function copyDiagnostics() {
+    setActionLoading("diagnostics-copy");
+    setError(null);
+    try {
+      const snapshot = await api.diagnostics();
+      setDiagnostics(snapshot);
+      await writeClipboard(JSON.stringify(snapshot, null, 2));
+      setDiagnosticsCopied(true);
+      window.setTimeout(() => setDiagnosticsCopied(false), 1800);
+      notify({ tone: "success", title: "Diagnóstico copiado" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Cópia falhou", detail: message });
+      await recordUiError("copy_diagnostics_failed", message);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function recordUiError(name: string, message: string, context: Record<string, unknown> = {}) {
+    try {
+      await api.recordDiagnosticEvent({
+        level: "error",
+        name,
+        message,
+        context: {
+          page: activePage,
+          selectedRepoId,
+          ...context
+        }
+      });
+      const [nextOperations, diagnosticsSnapshot] = await Promise.all([
+        api.operations(),
+        api.diagnostics()
+      ]);
+      setOperations(nextOperations);
+      setDiagnostics(diagnosticsSnapshot);
+    } catch {
+      // Diagnostic logging must never mask the original user-facing error.
     }
   }
 
@@ -625,12 +923,16 @@ export function App() {
   const navItems: Array<{ page: AppPage; label: string; icon: ReactNode }> = [
     { page: "dashboard", label: "Dashboard", icon: <Home size={18} /> },
     { page: "detail", label: "Detalhe", icon: <FolderGit2 size={18} /> },
+    { page: "workflows", label: "Workflows", icon: <CheckCircle2 size={18} /> },
     { page: "worktrees", label: "Worktrees", icon: <GitFork size={18} /> },
     { page: "branches", label: "Branches", icon: <GitBranch size={18} /> },
     { page: "operations", label: "Operações", icon: <TerminalSquare size={18} /> },
+    { page: "integrations", label: "Integrações", icon: <Plug size={18} /> },
     { page: "settings", label: "Configurações", icon: <Settings size={18} /> }
   ];
   const pageMeta = getPageMeta(activePage);
+  const guidedWorkflows = buildGuidedWorkflows();
+  const commandActions = buildCommandActions();
 
   function navigateToPage(page: AppPage) {
     setActivePage(page);
@@ -638,6 +940,437 @@ export function App() {
     if (window.location.hash !== `#${page}`) {
       window.location.hash = page;
     }
+  }
+
+  function runCommandAction(action: CommandPaletteAction) {
+    setCommandPaletteOpen(false);
+    window.setTimeout(action.run, 0);
+  }
+
+  function openGuidedWorkflow(workflowId: GuidedWorkflowId) {
+    setCommandPaletteOpen(false);
+    setDialog({ kind: "guided-workflow", workflowId });
+  }
+
+  function runGuidedWorkflow(workflowId: GuidedWorkflowId, options: GuidedWorkflowRunOptions = {}) {
+    setDialog(null);
+
+    if (!selectedRepo) {
+      setDialog({ kind: "repo-picker" });
+      return;
+    }
+
+    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo.path;
+
+    if (workflowId === "parallel-worktree") {
+      setDialog({ kind: "create-worktree" });
+      return;
+    }
+
+    if (workflowId === "handoff-local") {
+      const worktree =
+        worktrees.find((item) => item.id === options.worktreeId) ??
+        worktrees.find((item) => !sameWorktreePath(item.path, selectedRepo.path) && Boolean(item.branch));
+      if (!worktree) {
+        setError("Não existe uma worktree elegível para handoff.");
+        return;
+      }
+      confirmHandoffWorktreeToLocal(worktree);
+      return;
+    }
+
+    if (workflowId === "local-to-worktree") {
+      confirmMoveLocalBranchToWorktree();
+      return;
+    }
+
+    if (workflowId === "sync-focused") {
+      confirmPull(focusedPath, "focused");
+      return;
+    }
+
+    setDetailWorktreePath(focusedPath);
+    navigateToPage("detail");
+  }
+
+  function runGuidedWorkflowSecondary(workflowId: GuidedWorkflowId) {
+    setDialog(null);
+    if (!selectedRepo) {
+      setDialog({ kind: "repo-picker" });
+      return;
+    }
+
+    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo.path;
+    if (workflowId === "sync-focused") {
+      void runAction("Fetch", () => api.fetchRepo(selectedRepo.id, focusedPath));
+    }
+  }
+
+  function buildGuidedWorkflows(): GuidedWorkflowDefinition[] {
+    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo?.path ?? "";
+    const focusedWorktree = focusedPath ? findKnownWorktree(focusedPath) : null;
+    const changedFiles = focusedWorktree?.status?.total ?? selectedSummary?.changedFileCount ?? 0;
+    const blockedWithoutRepo = !selectedRepo;
+    const eligibleHandoffWorktrees = selectedRepo
+      ? worktrees.filter((worktree) => !sameWorktreePath(worktree.path, selectedRepo.path) && Boolean(worktree.branch))
+      : [];
+    const localWorktree = selectedRepo ? findKnownWorktree(selectedRepo.path) : null;
+    const localBranch = localWorktree?.branch ?? selectedSummary?.currentBranch ?? "branch atual";
+    const syncState = syncWorkflowStatus(selectedSummary);
+
+    return [
+      {
+        id: "parallel-worktree",
+        title: "Começar trabalho paralelo",
+        description: "Criar uma worktree para uma branch existente ou nova.",
+        section: "Worktrees",
+        icon: <GitFork size={20} />,
+        status: blockedWithoutRepo ? "blocked" : "ready",
+        statusLabel: blockedWithoutRepo ? "Sem repositório" : "Pronto",
+        steps: [
+          "Escolher branch existente ou criar uma nova branch.",
+          "Confirmar nome ou caminho da pasta da worktree.",
+          "Criar a worktree e passar o foco para ela."
+        ],
+        requirements: selectedRepo
+          ? [`Repositório: ${selectedRepo.name}`, `Worktree em foco: ${basename(focusedPath)}`]
+          : ["Seleciona um repositório para começar."],
+        primaryLabel: "Criar worktree",
+        disabled: blockedWithoutRepo
+      },
+      {
+        id: "handoff-local",
+        title: "Handoff de worktree para local",
+        description: "Trazer a branch de uma worktree para o workspace local.",
+        section: "Handoff",
+        icon: <ArrowRight size={20} />,
+        status: blockedWithoutRepo || !eligibleHandoffWorktrees.length ? "blocked" : "attention",
+        statusLabel: blockedWithoutRepo
+          ? "Sem repositório"
+          : eligibleHandoffWorktrees.length
+            ? `${eligibleHandoffWorktrees.length} disponível${eligibleHandoffWorktrees.length === 1 ? "" : "is"}`
+            : "Sem worktree elegível",
+        steps: [
+          "Guardar alterações não commitadas na worktree de origem.",
+          "Fazer detach da branch na worktree de origem.",
+          "Fazer checkout da branch no workspace local.",
+          "Reaplicar alterações não commitadas no workspace local."
+        ],
+        requirements: selectedRepo
+          ? [
+              `Destino local: ${selectedRepo.path}`,
+              eligibleHandoffWorktrees.length
+                ? "Existe pelo menos uma worktree com branch associada."
+                : "Não existe worktree com branch pronta para handoff."
+            ]
+          : ["Seleciona um repositório para começar."],
+        primaryLabel: "Preparar handoff",
+        disabled: blockedWithoutRepo || !eligibleHandoffWorktrees.length
+      },
+      {
+        id: "local-to-worktree",
+        title: "Handoff de local para worktree",
+        description: "Mover a branch local para uma worktree e libertar o workspace local.",
+        section: "Handoff",
+        icon: <GitFork size={20} />,
+        status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
+        statusLabel: blockedWithoutRepo
+          ? "Sem repositório"
+          : changedFiles
+            ? formatChangeCount(changedFiles)
+            : "Pronto",
+        steps: [
+          "Reutilizar uma worktree detached existente quando possível.",
+          "Guardar alterações não commitadas locais.",
+          "Fazer checkout de main ou master localmente.",
+          "Fazer checkout da branch na worktree.",
+          "Reaplicar alterações não commitadas na worktree."
+        ],
+        requirements: selectedRepo
+          ? [`Branch local: ${localBranch}`, `Workspace local: ${selectedRepo.path}`]
+          : ["Seleciona um repositório para começar."],
+        primaryLabel: "Preparar mover",
+        disabled: blockedWithoutRepo
+      },
+      {
+        id: "sync-focused",
+        title: "Sincronizar worktree em foco",
+        description: "Executar fetch ou pull na worktree selecionada.",
+        section: "Sincronização",
+        icon: <RefreshCcw size={20} />,
+        status: blockedWithoutRepo ? "blocked" : syncState.status,
+        statusLabel: blockedWithoutRepo ? "Sem repositório" : syncState.label,
+        steps: [
+          "Confirmar a worktree em foco.",
+          "Executar fetch para atualizar referências remotas.",
+          "Executar pull --ff-only quando for seguro avançar."
+        ],
+        requirements: selectedRepo
+          ? [
+              `Worktree em foco: ${focusedPath}`,
+              settings.safeMode ? "Modo seguro ativo." : "Modo seguro desligado."
+            ]
+          : ["Seleciona um repositório para começar."],
+        primaryLabel: "Preparar pull",
+        secondaryLabel: "Executar fetch",
+        disabled: blockedWithoutRepo
+      },
+      {
+        id: "review-changes",
+        title: "Rever alterações locais",
+        description: "Abrir o detalhe da worktree em foco para ver ficheiros alterados.",
+        section: "Revisão",
+        icon: <Search size={20} />,
+        status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
+        statusLabel: blockedWithoutRepo
+          ? "Sem repositório"
+          : changedFiles
+            ? formatChangeCount(changedFiles)
+            : "Sem alterações",
+        steps: [
+          "Abrir a vista de detalhe da worktree em foco.",
+          "Rever ficheiros staged, unstaged e por seguir.",
+          "Decidir entre commit, stash, handoff ou limpeza manual."
+        ],
+        requirements: selectedRepo
+          ? [`Worktree em foco: ${focusedPath}`, `${formatChangeCount(changedFiles)} detetadas.`]
+          : ["Seleciona um repositório para começar."],
+        primaryLabel: "Abrir detalhe",
+        disabled: blockedWithoutRepo
+      }
+    ];
+  }
+
+  function buildCommandActions(): CommandPaletteAction[] {
+    const actions: CommandPaletteAction[] = navItems.map((item) => ({
+      id: `page:${item.page}`,
+      title: `Ir para ${item.label}`,
+      subtitle: getPageMeta(item.page).subtitle,
+      section: "Navegação",
+      keywords: [item.page, item.label],
+      shortcut: item.page === activePage ? "Atual" : undefined,
+      icon: item.icon,
+      run: () => navigateToPage(item.page)
+    }));
+
+    actions.push({
+      id: "repo:add",
+      title: repos.length ? "Adicionar repositório" : "Selecionar repositório",
+      subtitle: "Abrir o navegador de pastas local",
+      section: "Repositório",
+      keywords: ["repo", "git", "pasta", "selecionar"],
+      icon: <Folder size={18} />,
+      run: () => setDialog({ kind: "repo-picker" })
+    });
+
+    guidedWorkflows.forEach((workflow) => {
+      actions.push({
+        id: `workflow:${workflow.id}`,
+        title: `Workflow: ${workflow.title}`,
+        subtitle: workflow.statusLabel,
+        section: "Workflows",
+        keywords: ["workflow", "guiado", workflow.title, workflow.section, workflow.statusLabel],
+        shortcut: workflow.disabled ? "Bloqueado" : undefined,
+        icon: workflow.icon,
+        run: () => openGuidedWorkflow(workflow.id)
+      });
+    });
+
+    workspaceRepos.forEach((repo) => {
+      actions.push({
+        id: `repo:select:${repo.id}`,
+        title: `Ativar repositório: ${repo.name}`,
+        subtitle: repo.path,
+        section: "Workspace",
+        keywords: ["repo", "workspace", repo.name, repo.path],
+        shortcut: repo.id === selectedRepoId ? "Ativo" : undefined,
+        icon: <FolderGit2 size={18} />,
+        run: () => setSelectedRepoId(repo.id)
+      });
+      actions.push({
+        id: `repo:detail:${repo.id}`,
+        title: `Abrir detalhe: ${repo.name}`,
+        subtitle: repo.path,
+        section: "Workspace",
+        keywords: ["detalhe", "repo", repo.name, repo.path],
+        icon: <ArrowRight size={18} />,
+        run: () => openRepoDetail(repo.id)
+      });
+    });
+
+    if (!selectedRepo) return actions;
+
+    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo.path;
+    actions.push(
+      {
+        id: "repo:refresh",
+        title: "Atualizar dashboard",
+        subtitle: selectedRepo.name,
+        section: "Ações",
+        keywords: ["refresh", "recarregar", "atualizar"],
+        icon: <RefreshCcw size={18} />,
+        run: () => void refreshDashboard(selectedRepoId, workspaceRepoIds, focusedWorktreePaths)
+      },
+      {
+        id: "repo:fetch",
+        title: "Executar fetch",
+        subtitle: `git fetch --prune em ${basename(focusedPath)}`,
+        section: "Git",
+        keywords: ["fetch", "prune", "remoto"],
+        icon: <RefreshCcw size={18} />,
+        run: () => void runAction("Fetch", () => api.fetchRepo(selectedRepo.id, focusedPath))
+      },
+      {
+        id: "repo:pull",
+        title: "Executar pull",
+        subtitle: `git pull --ff-only em ${basename(focusedPath)}`,
+        section: "Git",
+        keywords: ["pull", "ff", "atualizar"],
+        icon: <GitBranch size={18} />,
+        run: () => confirmPull(focusedPath, "focused")
+      },
+      {
+        id: "worktree:create",
+        title: "Criar worktree",
+        subtitle: selectedRepo.name,
+        section: "Worktrees",
+        keywords: ["nova", "criar", "worktree"],
+        icon: <GitFork size={18} />,
+        run: () => setDialog({ kind: "create-worktree" })
+      },
+      {
+        id: "branch:create",
+        title: "Criar branch",
+        subtitle: basename(focusedPath),
+        section: "Branches",
+        keywords: ["nova", "criar", "branch"],
+        icon: <GitBranch size={18} />,
+        run: () => setDialog({ kind: "create-branch" })
+      },
+      {
+        id: "local:move-to-worktree",
+        title: "Mover branch local para worktree",
+        subtitle: "Handoff do workspace local para uma worktree",
+        section: "Worktrees",
+        keywords: ["handoff", "mover", "local", "worktree"],
+        icon: <GitFork size={18} />,
+        run: confirmMoveLocalBranchToWorktree
+      },
+      {
+        id: "open:folder",
+        title: "Abrir pasta em foco",
+        subtitle: focusedPath,
+        section: "Abrir",
+        keywords: ["abrir", "finder", "folder", "pasta"],
+        icon: <Folder size={18} />,
+        run: () => openExternalPath(focusedPath, "folder")
+      },
+      {
+        id: "open:editor",
+        title: "Abrir em editor",
+        subtitle: focusedPath,
+        section: "Abrir",
+        keywords: ["abrir", "editor", "code"],
+        icon: <Code2 size={18} />,
+        run: () => openExternalPath(focusedPath, "editor")
+      },
+      {
+        id: "open:terminal",
+        title: "Abrir no terminal",
+        subtitle: focusedPath,
+        section: "Abrir",
+        keywords: ["abrir", "terminal", "shell"],
+        icon: <TerminalSquare size={18} />,
+        run: () => openExternalPath(focusedPath, "terminal")
+      }
+    );
+
+    worktrees.forEach((worktree) => {
+      const title = worktree.branch ? `Focar worktree: ${worktree.branch}` : `Focar worktree: ${basename(worktree.path)}`;
+      actions.push({
+        id: `worktree:focus:${worktree.id}`,
+        title,
+        subtitle: worktree.path,
+        section: "Worktrees",
+        keywords: ["focar", "worktree", worktree.branch ?? "", worktree.path],
+        shortcut: worktree.isCurrent ? "Foco" : undefined,
+        icon: <GitFork size={18} />,
+        run: () => {
+          setFocusedWorktreePaths((focusMap) => ({ ...focusMap, [selectedRepo.id]: worktree.path }));
+          openWorktreeDetail(worktree);
+        }
+      });
+
+      if (!sameWorktreePath(worktree.path, selectedRepo.path) && worktree.branch) {
+        actions.push({
+          id: `worktree:handoff:${worktree.id}`,
+          title: `Handoff para local: ${worktree.branch}`,
+          subtitle: worktree.path,
+          section: "Worktrees",
+          keywords: ["handoff", "local", "checkout", worktree.branch, worktree.path],
+          icon: <ArrowRight size={18} />,
+          run: () => confirmHandoffWorktreeToLocal(worktree)
+        });
+      }
+    });
+
+    localBranches
+      .filter((branch) => !branch.current)
+      .forEach((branch) => {
+        actions.push({
+          id: `branch:checkout:${branch.name}`,
+          title: `Checkout branch: ${branch.name}`,
+          subtitle: branch.upstream ?? "Branch local",
+          section: "Branches",
+          keywords: ["checkout", "switch", "branch", branch.name, branch.upstream ?? ""],
+          icon: <GitBranch size={18} />,
+          run: () => confirmBranchCheckout(branch)
+        });
+      });
+
+    actions.push(
+      {
+        id: "settings:safe-mode",
+        title: settings.safeMode ? "Desligar modo seguro" : "Ativar modo seguro",
+        subtitle: "Pré-validação para operações Git sensíveis",
+        section: "Configurações",
+        keywords: ["safe", "seguro", "modo"],
+        icon: settings.safeMode ? <ShieldOff size={18} /> : <ShieldCheck size={18} />,
+        run: () => void updateSafeMode(!settings.safeMode)
+      },
+      {
+        id: "settings:theme:dark",
+        title: "Tema escuro",
+        subtitle: "Aplicar tema escuro",
+        section: "Configurações",
+        keywords: ["tema", "escuro", "dark"],
+        shortcut: themePreference === "dark" ? "Atual" : undefined,
+        icon: <Moon size={18} />,
+        run: () => setThemePreference("dark")
+      },
+      {
+        id: "settings:theme:light",
+        title: "Tema claro",
+        subtitle: "Aplicar tema claro",
+        section: "Configurações",
+        keywords: ["tema", "claro", "light"],
+        shortcut: themePreference === "light" ? "Atual" : undefined,
+        icon: <Sun size={18} />,
+        run: () => setThemePreference("light")
+      },
+      {
+        id: "settings:theme:system",
+        title: "Tema do sistema",
+        subtitle: "Seguir preferência do sistema",
+        section: "Configurações",
+        keywords: ["tema", "sistema", "system"],
+        shortcut: themePreference === "system" ? "Atual" : undefined,
+        icon: <Monitor size={18} />,
+        run: () => setThemePreference("system")
+      }
+    );
+
+    return actions;
   }
 
   function renderRepoHero() {
@@ -736,6 +1469,39 @@ export function App() {
     );
   }
 
+  function renderWorkflowsPage() {
+    if (!workspaceRepos.length) {
+      return <EmptyState loading={loading} onSelectRepo={() => setDialog({ kind: "repo-picker" })} />;
+    }
+
+    return (
+      <>
+        {selectedRepo && selectedSummary ? renderRepoHero() : renderFocusedRepoPlaceholder()}
+        <DashboardSection
+          id="workflows"
+          title="Workflows guiados"
+          subtitle="Fluxos orientados para operações frequentes e sensíveis"
+          actions={
+            <button className="secondary-button" onClick={() => void refreshDashboard()}>
+              {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+              Atualizar
+            </button>
+          }
+        >
+          <div className="workflow-grid">
+            {guidedWorkflows.map((workflow) => (
+              <WorkflowCard
+                key={workflow.id}
+                workflow={workflow}
+                onOpen={() => openGuidedWorkflow(workflow.id)}
+              />
+            ))}
+          </div>
+        </DashboardSection>
+      </>
+    );
+  }
+
   function renderWorktreesPage() {
     if (!selectedRepo || !selectedSummary) return renderFocusedRepoPlaceholder();
 
@@ -831,6 +1597,45 @@ export function App() {
     );
   }
 
+  function renderIntegrationsPage() {
+    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo?.path ?? null;
+
+    return (
+      <DashboardSection
+        id="integrations"
+        title="Integrações"
+        subtitle="Ferramentas externas para abrir worktrees"
+        actions={
+          <>
+            <button className="secondary-button" onClick={() => void refreshIntegrations()}>
+              {actionLoading === "integrations" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+              Detetar
+            </button>
+            {focusedPath ? (
+              <>
+                <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "editor")}>
+                  <Code2 size={16} />
+                  Testar editor
+                </button>
+                <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "terminal")}>
+                  <TerminalSquare size={16} />
+                  Testar terminal
+                </button>
+              </>
+            ) : null}
+          </>
+        }
+      >
+        <IntegrationsPanel
+          catalog={integrationCatalog}
+          settings={settings}
+          busy={actionLoading === "integrations"}
+          onChange={updateIntegrations}
+        />
+      </DashboardSection>
+    );
+  }
+
   function renderSettingsPage() {
     return (
       <DashboardSection id="settings" title="Configurações" subtitle="Preferências locais">
@@ -839,16 +1644,32 @@ export function App() {
             <ThemeControl value={themePreference} onChange={setThemePreference} />
           </div>
           <div className="settings-item">
+            <SafeModeControl
+              value={settings.safeMode}
+              busy={actionLoading === "settings"}
+              onChange={(safeMode) => void updateSafeMode(safeMode)}
+            />
+          </div>
+          <div className="settings-item">
             <span className="settings-label">Versão</span>
             <strong>v1.0.0</strong>
           </div>
         </div>
+        <DiagnosticsPanel
+          diagnostics={diagnostics}
+          busy={actionLoading === "diagnostics" || actionLoading === "diagnostics-copy"}
+          copied={diagnosticsCopied}
+          onRefresh={() => void refreshDiagnostics()}
+          onCopy={() => void copyDiagnostics()}
+        />
       </DashboardSection>
     );
   }
 
   function renderPageContent() {
+    if (!workspaceHydrated && loading) return <DashboardSkeleton />;
     if (activePage === "settings") return renderSettingsPage();
+    if (activePage === "integrations") return renderIntegrationsPage();
     if (activePage === "operations") return renderOperationsPage();
 
     if (!workspaceRepos.length) {
@@ -856,6 +1677,7 @@ export function App() {
     }
 
     if (activePage === "detail") return renderDetailPage();
+    if (activePage === "workflows") return renderWorkflowsPage();
     if (activePage === "worktrees") return renderWorktreesPage();
     if (activePage === "branches") return renderBranchesPage();
 
@@ -888,6 +1710,9 @@ export function App() {
 
   return (
     <div className="app-shell">
+      {loading || actionLoading || detailLoading ? <div className="app-progress" /> : null}
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="brand">
           <GitFork aria-hidden="true" />
@@ -960,10 +1785,16 @@ export function App() {
             <h1>{pageMeta.title}</h1>
             <p>{pageMeta.subtitle}</p>
           </div>
-          <button className="primary-button" onClick={() => setDialog({ kind: "repo-picker" })}>
-            <Folder size={18} />
-            Adicionar Repositório
-          </button>
+          <div className="topbar-actions">
+            <button className="command-trigger" type="button" onClick={() => setCommandPaletteOpen(true)}>
+              <CommandIcon size={17} />
+              <span>Comandos</span>
+            </button>
+            <button className="primary-button" onClick={() => setDialog({ kind: "repo-picker" })}>
+              <Folder size={18} />
+              Adicionar Repositório
+            </button>
+          </div>
         </header>
 
         {error ? (
@@ -990,7 +1821,7 @@ export function App() {
 
       {dialog?.kind === "create-worktree" && selectedRepo ? (
         <CreateWorktreeDialog
-          branches={localBranches}
+          branches={branches}
           busy={actionLoading !== null}
           onClose={() => setDialog(null)}
           onCreate={(body) =>
@@ -1066,6 +1897,27 @@ export function App() {
           onConfirm={() => void runConfirmedSensitiveAction(dialog)}
         />
       ) : null}
+
+      {dialog?.kind === "guided-workflow" ? (
+        <GuidedWorkflowDialog
+          workflow={guidedWorkflows.find((workflow) => workflow.id === dialog.workflowId) ?? null}
+          worktrees={worktrees}
+          localWorkspacePath={selectedRepo?.path ?? null}
+          busy={actionLoading !== null}
+          onClose={() => setDialog(null)}
+          onRun={runGuidedWorkflow}
+          onSecondaryRun={runGuidedWorkflowSecondary}
+        />
+      ) : null}
+
+      {commandPaletteOpen ? (
+        <CommandPalette
+          actions={commandActions}
+          busy={actionLoading !== null || loading || detailLoading}
+          onClose={() => setCommandPaletteOpen(false)}
+          onRun={runCommandAction}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1122,6 +1974,241 @@ function DashboardSection({
       </div>
       {children}
     </section>
+  );
+}
+
+function ToastViewport({
+  toasts,
+  onDismiss
+}: {
+  toasts: ToastRecord[];
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-relevant="additions">
+      {toasts.map((toast) => (
+        <div key={toast.id} className={`toast ${toast.tone}`}>
+          <div className="toast-icon">
+            {toast.tone === "success" ? <CheckCircle2 size={17} /> : toast.tone === "error" ? <AlertTriangle size={17} /> : <Clock3 size={17} />}
+          </div>
+          <div>
+            <strong>{toast.title}</strong>
+            {toast.detail ? <span>{toast.detail}</span> : null}
+          </div>
+          <button className="icon-button compact" type="button" onClick={() => onDismiss(toast.id)}>
+            <X size={15} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <>
+      <section className="repo-hero skeleton-block">
+        <div className="hero-left">
+          <div className="hero-icon skeleton-pulse" />
+          <div className="skeleton-copy">
+            <span className="skeleton-line short" />
+            <span className="skeleton-line title" />
+            <span className="skeleton-line long" />
+          </div>
+        </div>
+      </section>
+      <section className="stats-grid" aria-hidden="true">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="stat-card skeleton-card">
+            <span className="skeleton-line short" />
+            <span className="skeleton-line title" />
+            <span className="skeleton-line medium" />
+          </div>
+        ))}
+      </section>
+      <section className="panel skeleton-panel" aria-hidden="true">
+        <span className="skeleton-line title" />
+        <span className="skeleton-line long" />
+        <span className="skeleton-line long" />
+        <span className="skeleton-line medium" />
+      </section>
+    </>
+  );
+}
+
+function AppCrashFallback({
+  message,
+  onRetry
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="crash-shell">
+      <section className="crash-panel">
+        <div className="hero-icon">
+          <AlertTriangle size={34} />
+        </div>
+        <div>
+          <h1>Erro de interface</h1>
+          <p>{message || "A aplicação encontrou um erro inesperado."}</p>
+        </div>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onRetry}>
+            Tentar novamente
+          </button>
+          <button className="primary-button" type="button" onClick={() => window.location.reload()}>
+            Recarregar
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function WorkflowCard({
+  workflow,
+  onOpen
+}: {
+  workflow: GuidedWorkflowDefinition;
+  onOpen: () => void;
+}) {
+  return (
+    <article className={`workflow-card ${workflow.status}`}>
+      <div className="workflow-card-header">
+        <div className="workflow-icon">{workflow.icon}</div>
+        <span className={`workflow-status ${workflow.status}`}>{workflow.statusLabel}</span>
+      </div>
+      <div className="workflow-card-copy">
+        <span>{workflow.section}</span>
+        <h3>{workflow.title}</h3>
+        <p>{workflow.description}</p>
+      </div>
+      <ol className="workflow-mini-steps">
+        {workflow.steps.slice(0, 3).map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <button className="secondary-button" disabled={workflow.disabled} type="button" onClick={onOpen}>
+        <CheckCircle2 size={16} />
+        Abrir workflow
+      </button>
+    </article>
+  );
+}
+
+function GuidedWorkflowDialog({
+  workflow,
+  worktrees,
+  localWorkspacePath,
+  busy,
+  onClose,
+  onRun,
+  onSecondaryRun
+}: {
+  workflow: GuidedWorkflowDefinition | null;
+  worktrees: WorktreeRecord[];
+  localWorkspacePath: string | null;
+  busy: boolean;
+  onClose: () => void;
+  onRun: (workflowId: GuidedWorkflowId, options?: GuidedWorkflowRunOptions) => void;
+  onSecondaryRun: (workflowId: GuidedWorkflowId) => void;
+}) {
+  const handoffOptions = localWorkspacePath
+    ? worktrees.filter((worktree) => !sameWorktreePath(worktree.path, localWorkspacePath) && Boolean(worktree.branch))
+    : [];
+  const firstHandoffId = handoffOptions[0]?.id ?? "";
+  const [worktreeId, setWorktreeId] = useState(firstHandoffId);
+
+  useEffect(() => {
+    if (workflow?.id === "handoff-local") setWorktreeId(firstHandoffId);
+  }, [firstHandoffId, workflow?.id]);
+
+  if (!workflow) return null;
+
+  const requiresWorktreeChoice = workflow.id === "handoff-local";
+  const selectedHandoffWorktree = handoffOptions.find((worktree) => worktree.id === worktreeId) ?? null;
+  const primaryDisabled = busy || workflow.disabled || (requiresWorktreeChoice && !selectedHandoffWorktree);
+
+  return (
+    <Modal title={workflow.title} onClose={onClose}>
+      <div className="workflow-dialog">
+        <div className={`workflow-dialog-status ${workflow.status}`}>
+          <div className="workflow-icon">{workflow.icon}</div>
+          <div>
+            <span>{workflow.section}</span>
+            <strong>{workflow.statusLabel}</strong>
+          </div>
+        </div>
+
+        <p className="workflow-dialog-description">{workflow.description}</p>
+
+        {requiresWorktreeChoice ? (
+          <label className="workflow-selector">
+            Worktree de origem
+            <select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)} disabled={!handoffOptions.length}>
+              {handoffOptions.length ? (
+                handoffOptions.map((worktree) => (
+                  <option key={worktree.id} value={worktree.id}>
+                    {worktree.branch ?? basename(worktree.path)} - {worktree.path}
+                  </option>
+                ))
+              ) : (
+                <option value="">Sem worktree elegível</option>
+              )}
+            </select>
+          </label>
+        ) : null}
+
+        <div className="workflow-dialog-grid">
+          <section className="workflow-dialog-block">
+            <h3>Passos</h3>
+            <ol>
+              {workflow.steps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+          </section>
+          <section className="workflow-dialog-block">
+            <h3>Pré-condições</h3>
+            <ul>
+              {workflow.requirements.map((requirement) => (
+                <li key={requirement}>
+                  <CheckCircle2 size={15} />
+                  <span>{requirement}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            Cancelar
+          </button>
+          {workflow.secondaryLabel ? (
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={busy || workflow.disabled}
+              onClick={() => onSecondaryRun(workflow.id)}
+            >
+              {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+              {workflow.secondaryLabel}
+            </button>
+          ) : null}
+          <button
+            className="primary-button"
+            type="button"
+            disabled={primaryDisabled}
+            onClick={() => onRun(workflow.id, { worktreeId })}
+          >
+            {busy ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
+            {workflow.primaryLabel}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -2154,7 +3241,7 @@ function RowActions({
       setOpen(false);
     }
 
-    function handleKeyDown(event: KeyboardEvent) {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") setOpen(false);
     }
 
@@ -2252,6 +3339,371 @@ function ThemeControl({
         ))}
       </div>
     </div>
+  );
+}
+
+function SafeModeControl({
+  value,
+  busy,
+  onChange
+}: {
+  value: boolean;
+  busy: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  const options: Array<{ value: boolean; label: string; icon: ReactNode }> = [
+    { value: true, label: "Ativo", icon: <ShieldCheck size={15} /> },
+    { value: false, label: "Desligado", icon: <ShieldOff size={15} /> }
+  ];
+
+  return (
+    <div className="settings-control" aria-label="Modo seguro">
+      <span>Modo seguro</span>
+      <div className="settings-segmented two" role="group" aria-label="Escolher modo seguro">
+        {options.map((option) => (
+          <button
+            key={String(option.value)}
+            aria-pressed={value === option.value}
+            className={value === option.value ? "active" : ""}
+            disabled={busy}
+            title={option.label}
+            type="button"
+            onClick={() => onChange(option.value)}
+          >
+            {option.icon}
+            <span>{option.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticsPanel({
+  diagnostics,
+  busy,
+  copied,
+  onRefresh,
+  onCopy
+}: {
+  diagnostics: DiagnosticsSnapshot | null;
+  busy: boolean;
+  copied: boolean;
+  onRefresh: () => void;
+  onCopy: () => void;
+}) {
+  const stats = diagnostics?.operationStats;
+  const latestFailure = diagnostics?.recentFailures[0] ?? null;
+
+  return (
+    <section className="diagnostics-panel" aria-label="Observabilidade">
+      <div className="diagnostics-header">
+        <div>
+          <span className="settings-label">Observabilidade</span>
+          <h3>Diagnóstico local</h3>
+        </div>
+        <div className="diagnostics-actions">
+          <button className="secondary-button" disabled={busy} type="button" onClick={onRefresh}>
+            {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+            Atualizar
+          </button>
+          <button className="primary-button" disabled={busy || !diagnostics} type="button" onClick={onCopy}>
+            <Copy size={16} />
+            {copied ? "Copiado" : "Copiar JSON"}
+          </button>
+        </div>
+      </div>
+
+      {diagnostics ? (
+        <>
+          <div className="diagnostics-grid">
+            <div className="diagnostic-card">
+              <span>Runtime</span>
+              <strong>{diagnostics.runtime}</strong>
+              <small>{diagnostics.platform}</small>
+            </div>
+            <div className="diagnostic-card">
+              <span>Repositórios</span>
+              <strong>{diagnostics.repositoryCount}</strong>
+              <small>v{diagnostics.appVersion}</small>
+            </div>
+            <div className="diagnostic-card">
+              <span>Operações</span>
+              <strong>{diagnostics.operationCount}</strong>
+              <small>{stats ? `${stats.success} ok / ${stats.error} falhas` : "-"}</small>
+            </div>
+            <div className="diagnostic-card">
+              <span>P95</span>
+              <strong>{formatDuration(stats?.p95DurationMs)}</strong>
+              <small>média {formatDuration(stats?.averageDurationMs)}</small>
+            </div>
+            <div className="diagnostic-card">
+              <span>Timeouts</span>
+              <strong>{stats?.timedOut ?? 0}</strong>
+              <small>pior {formatDuration(stats?.slowestDurationMs)}</small>
+            </div>
+            <div className="diagnostic-card">
+              <span>Última falha</span>
+              <strong>{relativeDate(stats?.lastFailureAt)}</strong>
+              <small>{latestFailure?.summary || "Sem falhas recentes"}</small>
+            </div>
+          </div>
+
+          <div className="diagnostics-detail">
+            <div>
+              <span className="settings-label">State file</span>
+              <code>{diagnostics.statePath ?? "-"}</code>
+            </div>
+            <div>
+              <span className="settings-label">Gerado</span>
+              <strong>{relativeDate(diagnostics.generatedAt)}</strong>
+            </div>
+          </div>
+
+          {diagnostics.recentFailures.length ? (
+            <div className="diagnostics-failures">
+              {diagnostics.recentFailures.map((operation) => (
+                <div key={operation.id} className="diagnostic-failure">
+                  <AlertTriangle size={15} />
+                  <span>{operation.summary || formatCommand(operation)}</span>
+                  <small>{relativeDate(operation.finishedAt)}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="empty-inline">Sem diagnóstico disponível.</div>
+      )}
+    </section>
+  );
+}
+
+function IntegrationsPanel({
+  catalog,
+  settings,
+  busy,
+  onChange
+}: {
+  catalog: IntegrationCatalog | null;
+  settings: AppSettings;
+  busy: boolean;
+  onChange: (integrations: AppSettings["integrations"]) => void;
+}) {
+  const editors = catalog?.editors ?? [];
+  const terminals = catalog?.terminals ?? [];
+
+  return (
+    <div className="integrations-layout">
+      <IntegrationGroup
+        title="Editor"
+        icon={<Code2 size={18} />}
+        options={editors}
+        selectedId={settings.integrations.editor}
+        busy={busy}
+        onSelect={(editor) => onChange({ ...settings.integrations, editor })}
+      />
+      <IntegrationGroup
+        title="Terminal"
+        icon={<TerminalSquare size={18} />}
+        options={terminals}
+        selectedId={settings.integrations.terminal}
+        busy={busy}
+        onSelect={(terminal) => onChange({ ...settings.integrations, terminal })}
+      />
+    </div>
+  );
+}
+
+function IntegrationGroup<TId extends string>({
+  title,
+  icon,
+  options,
+  selectedId,
+  busy,
+  onSelect
+}: {
+  title: string;
+  icon: ReactNode;
+  options: IntegrationRecord<TId>[];
+  selectedId: TId;
+  busy: boolean;
+  onSelect: (id: TId) => void;
+}) {
+  return (
+    <section className="integration-group">
+      <div className="integration-group-header">
+        <div className="workflow-icon">{icon}</div>
+        <div>
+          <span className="settings-label">Integração</span>
+          <h3>{title}</h3>
+        </div>
+      </div>
+
+      <div className="integration-options">
+        {options.length ? (
+          options.map((option) => (
+            <button
+              key={option.id}
+              className={option.id === selectedId ? "integration-option active" : "integration-option"}
+              disabled={busy}
+              type="button"
+              onClick={() => onSelect(option.id)}
+            >
+              <span className={`integration-availability ${option.available ? "available" : "missing"}`}>
+                {option.available ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              </span>
+              <span className="integration-copy">
+                <strong>{option.label}</strong>
+                <small>{option.description}</small>
+                {option.command ? <code>{option.command}</code> : null}
+              </span>
+              {option.id === selectedId ? <span className="badge green">Selecionado</span> : null}
+            </button>
+          ))
+        ) : (
+          <div className="empty-inline">A carregar integrações.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CommandPalette({
+  actions,
+  busy,
+  onClose,
+  onRun
+}: {
+  actions: CommandPaletteAction[];
+  busy: boolean;
+  onClose: () => void;
+  onRun: (action: CommandPaletteAction) => void;
+}) {
+  const titleId = useId();
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const visibleActions = useMemo(() => filterCommandActions(actions, query), [actions, query]);
+  const groups = useMemo(() => groupCommandActions(visibleActions), [visibleActions]);
+  const activeAction = visibleActions[activeIndex] ?? null;
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    inputRef.current?.focus();
+
+    return () => {
+      if (previousActiveElement?.isConnected) previousActiveElement.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query]);
+
+  useEffect(() => {
+    if (activeIndex >= visibleActions.length) {
+      setActiveIndex(Math.max(0, visibleActions.length - 1));
+    }
+  }, [activeIndex, visibleActions.length]);
+
+  function run(action: CommandPaletteAction | null) {
+    if (!action) return;
+    onRun(action);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((index) => (visibleActions.length ? (index + 1) % visibleActions.length : 0));
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((index) => (visibleActions.length ? (index - 1 + visibleActions.length) % visibleActions.length : 0));
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      run(activeAction);
+    }
+  }
+
+  return createPortal(
+    <div
+      className="command-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        className="command-palette"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="command-input-shell">
+          <Search size={18} />
+          <input
+            ref={inputRef}
+            aria-label="Pesquisar comandos"
+            value={query}
+            placeholder="Pesquisar comandos, repositórios, worktrees ou branches"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {busy ? <Loader2 className="spin" size={16} /> : null}
+          <button className="icon-button compact" type="button" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <h2 id={titleId} className="sr-only">
+          Paleta de comandos
+        </h2>
+
+        <div className="command-results" role="listbox" aria-label="Comandos">
+          {visibleActions.length ? (
+            groups.map((group) => (
+              <div key={group.section} className="command-group">
+                <span>{group.section}</span>
+                {group.items.map(({ action, index }) => (
+                  <button
+                    key={action.id}
+                    className={index === activeIndex ? "command-item active" : "command-item"}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeIndex}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => run(action)}
+                  >
+                    <span className="command-icon">{action.icon}</span>
+                    <span className="command-copy">
+                      <strong>{action.title}</strong>
+                      {action.subtitle ? <small>{action.subtitle}</small> : null}
+                    </span>
+                    {action.shortcut ? <kbd>{action.shortcut}</kbd> : null}
+                  </button>
+                ))}
+              </div>
+            ))
+          ) : (
+            <div className="command-empty">Nenhum comando encontrado.</div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -2669,7 +4121,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 
     (firstFocusable ?? modal)?.focus();
 
-    function handleKeyDown(event: KeyboardEvent) {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
         onCloseRef.current();
         return;
@@ -2754,6 +4206,62 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   ).filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
 }
 
+function filterCommandActions(actions: CommandPaletteAction[], query: string): CommandPaletteAction[] {
+  const normalizedQuery = normalizeCommandText(query).trim();
+  if (!normalizedQuery) return actions;
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  return actions
+    .map((action, index) => {
+      const score = scoreCommandAction(action, normalizedQuery, tokens);
+      return score === null ? null : { action, index, score };
+    })
+    .filter((item): item is { action: CommandPaletteAction; index: number; score: number } => Boolean(item))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((item) => item.action)
+    .slice(0, 60);
+}
+
+function scoreCommandAction(action: CommandPaletteAction, query: string, tokens: string[]): number | null {
+  const title = normalizeCommandText(action.title);
+  const subtitle = normalizeCommandText(action.subtitle ?? "");
+  const section = normalizeCommandText(action.section);
+  const keywords = normalizeCommandText((action.keywords ?? []).join(" "));
+  const haystack = [title, subtitle, section, keywords].join(" ");
+
+  if (!tokens.every((token) => haystack.includes(token))) return null;
+
+  let score = 0;
+  if (title === query) score += 80;
+  if (title.startsWith(query)) score += 55;
+  if (title.includes(query)) score += 35;
+  if (keywords.includes(query)) score += 20;
+  if (subtitle.includes(query)) score += 12;
+  if (section.includes(query)) score += 8;
+  score += Math.max(0, 20 - title.length / 10);
+  return score;
+}
+
+function groupCommandActions(actions: CommandPaletteAction[]) {
+  const groups: Array<{ section: string; items: Array<{ action: CommandPaletteAction; index: number }> }> = [];
+  actions.forEach((action, index) => {
+    let group = groups.find((item) => item.section === action.section);
+    if (!group) {
+      group = { section: action.section, items: [] };
+      groups.push(group);
+    }
+    group.items.push({ action, index });
+  });
+  return groups;
+}
+
+function normalizeCommandText(value: string) {
+  return value
+    .toLocaleLowerCase("pt-PT")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function relativeDate(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -2794,6 +4302,14 @@ function openTargetActionLabel(target: OpenTarget) {
   return "Abrir pasta";
 }
 
+async function writeClipboard(value: string) {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Área de transferência indisponível.");
+  }
+
+  await navigator.clipboard.writeText(value);
+}
+
 function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
 }
@@ -2820,6 +4336,10 @@ function getPageMeta(page: AppPage) {
       title: "Detalhe",
       subtitle: "Estado Git da worktree selecionada"
     },
+    workflows: {
+      title: "Workflows",
+      subtitle: "Operações guiadas para trabalho em paralelo"
+    },
     worktrees: {
       title: "Worktrees",
       subtitle: "Gerir worktrees do repositório em foco"
@@ -2831,6 +4351,10 @@ function getPageMeta(page: AppPage) {
     operations: {
       title: "Operações",
       subtitle: "Histórico local dos comandos Git"
+    },
+    integrations: {
+      title: "Integrações",
+      subtitle: "Editor, terminal e ferramentas externas"
     },
     settings: {
       title: "Configurações",
@@ -2850,9 +4374,11 @@ function isAppPage(value: unknown): value is AppPage {
   return (
     value === "dashboard" ||
     value === "detail" ||
+    value === "workflows" ||
     value === "worktrees" ||
     value === "branches" ||
     value === "operations" ||
+    value === "integrations" ||
     value === "settings"
   );
 }
@@ -2869,6 +4395,16 @@ function syncLabel(ahead: number, behind: number) {
   if (!ahead && !behind) return "Sync";
   if (ahead && behind) return `A${ahead} / B${behind}`;
   return ahead ? `Ahead ${ahead}` : `Behind ${behind}`;
+}
+
+function syncWorkflowStatus(summary: RepoSummary | null): { status: WorkflowStatusTone; label: string } {
+  if (!summary) return { status: "blocked", label: "Sem dados" };
+  const ahead = summary.ahead ?? 0;
+  const behind = summary.behind ?? 0;
+  if (ahead && behind) return { status: "attention", label: `Divergente: A${ahead} / B${behind}` };
+  if (behind) return { status: "attention", label: `Behind ${behind}` };
+  if (ahead) return { status: "attention", label: `Ahead ${ahead}` };
+  return { status: "ready", label: "Sincronizado" };
 }
 
 async function copyPath(path: string, setError: (value: string | null) => void) {

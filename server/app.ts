@@ -1,14 +1,28 @@
 import cors from "cors";
 import express from "express";
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { Request, Response, NextFunction } from "express";
-import type { OpenTarget } from "../src/types";
+import type {
+  AppIntegrations,
+  AppSettings,
+  EditorIntegrationId,
+  IntegrationCatalog,
+  IntegrationRecord,
+  OpenTarget,
+  TerminalIntegrationId
+} from "../src/types";
 import {
+  assertCleanWorktreeForSafeOperation,
+  assertNoConflictsForSafeOperation,
+  assertSafeBranchDeletion,
+  checkoutBranch,
+  createBranch,
+  createWorktree,
   decodePathId,
-  defaultWorktreeName,
   getBranches,
   getRepoDetail,
   getRepoSummary,
@@ -18,9 +32,9 @@ import {
   moveLocalBranchToWorktree,
   resolveRepoWorktreePath,
   runGit,
-  sanitizeFilePart,
   validateRepository
 } from "./git";
+import { diagnosticEventFromBody, getDiagnosticsSnapshot, recordDiagnosticEvent } from "./diagnostics";
 import { AppStore, createDefaultStore } from "./store";
 
 type AsyncRoute = (req: Request, res: Response, next: NextFunction) => Promise<void>;
@@ -100,6 +114,41 @@ export function createApp(store: AppStore = createDefaultStore()) {
   );
 
   app.get(
+    "/api/settings",
+    asyncHandler(async (_req, res) => {
+      res.json(await store.getSettings());
+    })
+  );
+
+  app.patch(
+    "/api/settings",
+    asyncHandler(async (req, res) => {
+      res.json(await store.updateSettings(settingsFromBody(req.body)));
+    })
+  );
+
+  app.get(
+    "/api/integrations",
+    asyncHandler(async (_req, res) => {
+      res.json(await getIntegrationCatalog(await store.getSettings()));
+    })
+  );
+
+  app.get(
+    "/api/diagnostics",
+    asyncHandler(async (_req, res) => {
+      res.json(await getDiagnosticsSnapshot(store, "node"));
+    })
+  );
+
+  app.post(
+    "/api/diagnostics/events",
+    asyncHandler(async (req, res) => {
+      res.status(201).json(await recordDiagnosticEvent(store, diagnosticEventFromBody(req.body)));
+    })
+  );
+
+  app.get(
     "/api/repos/:repoId/summary",
     withRepo(store, async (repo, req, res) => {
       const focusedPath = await resolveRepoWorktreePath(
@@ -139,27 +188,18 @@ export function createApp(store: AppStore = createDefaultStore()) {
     "/api/repos/:repoId/worktrees",
     withRepo(store, async (repo, req, res) => {
       const branch = requiredBodyString(req.body, "branch");
-      const requestedPath = optionalBodyString(req.body, "path");
-      const requestedName = optionalBodyString(req.body, "name");
-      const targetPath = requestedPath
-        ? path.resolve(requestedPath)
-        : path.join(
-            path.dirname(repo.path),
-            requestedName ? sanitizeFilePart(requestedName) : defaultWorktreeName(repo.name, branch)
-          );
-
-      if (await pathExists(targetPath)) {
-        res.status(409).json({ error: "Já existe uma pasta com esse nome.", detail: targetPath });
-        return;
-      }
-
-      const args =
-        req.body?.newBranch === true
-          ? ["worktree", "add", "-b", branch, targetPath]
-          : ["worktree", "add", targetPath, branch];
 
       await runExclusiveRepoTask(repo.id, async () => {
-        await runGit(repo.path, args, store, { timeoutMs: 120_000 });
+        const targetPath = await createWorktree(
+          repo,
+          {
+            branch,
+            newBranch: req.body?.newBranch === true,
+            name: optionalBodyString(req.body, "name"),
+            path: optionalBodyString(req.body, "path")
+          },
+          store
+        );
         res.status(201).json({ path: targetPath });
       });
     })
@@ -177,7 +217,12 @@ export function createApp(store: AppStore = createDefaultStore()) {
       }
 
       await runExclusiveRepoTask(repo.id, async () => {
-        await runGit(repo.path, ["worktree", "remove", worktreePath], store, {
+        const settings = await store.getSettings();
+        const focusedPath = await resolveRepoWorktreePath(repo.path, worktreePath, store);
+        if (settings.safeMode) {
+          await assertCleanWorktreeForSafeOperation(focusedPath, "remover worktree", store);
+        }
+        await runGit(repo.path, ["worktree", "remove", focusedPath], store, {
           timeoutMs: 120_000
         });
         res.status(204).end();
@@ -189,16 +234,21 @@ export function createApp(store: AppStore = createDefaultStore()) {
     "/api/repos/:repoId/worktrees/move-local",
     withRepo(store, async (repo, req, res) => {
       res.json(
-        await runExclusiveRepoTask(repo.id, () =>
-          moveLocalBranchToWorktree(
+        await runExclusiveRepoTask(repo.id, async () => {
+          const settings = await store.getSettings();
+          if (settings.safeMode) {
+            await assertNoConflictsForSafeOperation(repo.path, "mover para worktree", store);
+          }
+          return moveLocalBranchToWorktree(
             repo,
             {
               name: optionalBodyString(req.body, "name"),
               path: optionalBodyString(req.body, "path")
             },
-            store
-          )
-        )
+            store,
+            { safeMode: settings.safeMode }
+          );
+        })
       );
     })
   );
@@ -209,9 +259,14 @@ export function createApp(store: AppStore = createDefaultStore()) {
       const worktreePath = decodePathId(req.params.worktreeId);
       const focusedPath = await resolveRepoWorktreePath(repo.path, worktreePath, store);
       res.json(
-        await runExclusiveRepoTask(repo.id, () =>
-          handoffWorktreeBranchToLocal(repo.path, focusedPath, store)
-        )
+        await runExclusiveRepoTask(repo.id, async () => {
+          const settings = await store.getSettings();
+          if (settings.safeMode) {
+            await assertNoConflictsForSafeOperation(focusedPath, "handoff para local", store);
+            await assertNoConflictsForSafeOperation(repo.path, "handoff para local", store);
+          }
+          return handoffWorktreeBranchToLocal(repo.path, focusedPath, store);
+        })
       );
     })
   );
@@ -239,8 +294,8 @@ export function createApp(store: AppStore = createDefaultStore()) {
         store
       );
       await runExclusiveRepoTask(repo.id, async () => {
-        await runGit(focusedPath, ["branch", name, ...(from ? [from] : [])], store);
-        res.status(201).json({ name });
+        const branchName = await createBranch(focusedPath, name, from, store);
+        res.status(201).json({ name: branchName });
       });
     })
   );
@@ -254,8 +309,12 @@ export function createApp(store: AppStore = createDefaultStore()) {
         store
       );
       await runExclusiveRepoTask(repo.id, async () => {
-        await runGit(focusedPath, ["switch", req.params.name], store);
-        res.json({ branch: req.params.name });
+        const settings = await store.getSettings();
+        if (settings.safeMode) {
+          await assertCleanWorktreeForSafeOperation(focusedPath, "checkout de branch", store);
+        }
+        const branch = await checkoutBranch(repo.path, req.params.name, focusedPath, store);
+        res.json({ branch });
       });
     })
   );
@@ -276,6 +335,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         store
       );
       await runExclusiveRepoTask(repo.id, async () => {
+        const settings = await store.getSettings();
+        if (settings.safeMode) {
+          await assertSafeBranchDeletion(repo.path, name, store);
+        }
         await runGit(focusedPath, ["branch", req.body?.force === true ? "-D" : "-d", name], store);
         res.status(204).end();
       });
@@ -306,6 +369,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         store
       );
       await runExclusiveRepoTask(repo.id, async () => {
+        const settings = await store.getSettings();
+        if (settings.safeMode) {
+          await assertCleanWorktreeForSafeOperation(focusedPath, "pull", store);
+        }
         await runGit(focusedPath, ["pull", "--ff-only"], store, { timeoutMs: 120_000 });
         res.json({ ok: true });
       });
@@ -317,7 +384,7 @@ export function createApp(store: AppStore = createDefaultStore()) {
     asyncHandler(async (req, res) => {
       const targetPath = await validateOpenTarget(store, requiredBodyString(req.body, "path"));
       const target = openTargetFromBody(req.body);
-      await openPath(targetPath, target);
+      await openPath(targetPath, target, await store.getSettings());
       res.json({ ok: true, target });
     })
   );
@@ -401,11 +468,69 @@ function optionalBodyString(body: unknown, key: string): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function settingsFromBody(body: unknown): Partial<AppSettings> {
+  const payload = body as Record<string, unknown> | null;
+  const safeMode = payload?.safeMode;
+  if (safeMode !== undefined && typeof safeMode !== "boolean") {
+    throw new Error("Valor inválido para modo seguro.");
+  }
+
+  const integrations = integrationsFromBody(payload?.integrations);
+
+  return {
+    ...(typeof safeMode === "boolean" ? { safeMode } : {}),
+    ...(integrations ? { integrations } : {})
+  };
+}
+
+function integrationsFromBody(value: unknown): AppIntegrations | null {
+  if (value === undefined) return null;
+  const integrations = value as Partial<AppIntegrations> | null;
+  if (!integrations || typeof integrations !== "object") {
+    throw new Error("Integrações inválidas.");
+  }
+
+  const editor = integrations.editor;
+  const terminal = integrations.terminal;
+  if (!isEditorIntegration(editor)) {
+    throw new Error("Editor externo inválido.");
+  }
+  if (!isTerminalIntegration(terminal)) {
+    throw new Error("Terminal externo inválido.");
+  }
+
+  return { editor, terminal };
+}
+
 function openTargetFromBody(body: unknown): OpenTarget {
   const value = (body as Record<string, unknown> | null)?.target;
   if (value === undefined || value === null || value === "") return "folder";
   if (value === "folder" || value === "editor" || value === "terminal") return value;
   throw new Error("Destino de abertura inválido.");
+}
+
+function isEditorIntegration(value: unknown): value is EditorIntegrationId {
+  return (
+    value === "auto" ||
+    value === "vscode" ||
+    value === "cursor" ||
+    value === "windsurf" ||
+    value === "zed" ||
+    value === "sublime"
+  );
+}
+
+function isTerminalIntegration(value: unknown): value is TerminalIntegrationId {
+  return (
+    value === "auto" ||
+    value === "system" ||
+    value === "iterm" ||
+    value === "warp" ||
+    value === "windows-terminal" ||
+    value === "x-terminal-emulator" ||
+    value === "gnome-terminal" ||
+    value === "konsole"
+  );
 }
 
 function createRepoTaskQueue() {
@@ -503,8 +628,8 @@ type OpenCommand = {
   args: string[];
 };
 
-async function openPath(targetPath: string, target: OpenTarget): Promise<void> {
-  const opener = buildOpenCommand(targetPath, target);
+async function openPath(targetPath: string, target: OpenTarget, settings: AppSettings): Promise<void> {
+  const opener = buildOpenCommand(targetPath, target, process.platform, process.env, settings);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(opener.command, opener.args, {
       detached: true,
@@ -523,11 +648,15 @@ export function buildOpenCommand(
   targetPath: string,
   target: OpenTarget,
   platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  settings?: AppSettings
 ): OpenCommand {
   if (target === "folder") return folderOpenCommand(targetPath, platform);
 
   if (target === "editor") {
+    const editor = settings?.integrations.editor ?? "auto";
+    if (editor !== "auto") return editorOpenCommand(editor, targetPath, platform);
+
     const configured = env.WORKTREE_MANAGER_EDITOR?.trim();
     if (configured) return configuredOpenCommand(configured, targetPath);
 
@@ -539,6 +668,11 @@ export function buildOpenCommand(
     }
 
     return { command: platform === "win32" ? "code.cmd" : "code", args: [targetPath] };
+  }
+
+  const terminal = settings?.integrations.terminal ?? "auto";
+  if (terminal !== "auto" && terminal !== "system") {
+    return terminalOpenCommand(terminal, targetPath, platform);
   }
 
   const configured = env.WORKTREE_MANAGER_TERMINAL?.trim();
@@ -553,6 +687,207 @@ export function buildOpenCommand(
   }
 
   return { command: "x-terminal-emulator", args: ["--working-directory", targetPath] };
+}
+
+function editorOpenCommand(editor: EditorIntegrationId, targetPath: string, platform: NodeJS.Platform): OpenCommand {
+  if (editor === "vscode") return { command: platform === "win32" ? "code.cmd" : "code", args: [targetPath] };
+  if (editor === "cursor") return { command: platform === "win32" ? "cursor.cmd" : "cursor", args: [targetPath] };
+  if (editor === "windsurf") return { command: platform === "win32" ? "windsurf.cmd" : "windsurf", args: [targetPath] };
+  if (editor === "zed") return { command: platform === "win32" ? "zed.exe" : "zed", args: [targetPath] };
+  return { command: platform === "win32" ? "sublime_text.exe" : "subl", args: [targetPath] };
+}
+
+function terminalOpenCommand(terminal: TerminalIntegrationId, targetPath: string, platform: NodeJS.Platform): OpenCommand {
+  if (terminal === "iterm") return { command: "open", args: ["-a", "iTerm", targetPath] };
+  if (terminal === "warp") {
+    if (platform === "darwin") return { command: "open", args: ["-a", "Warp", targetPath] };
+    return { command: "warp-terminal", args: ["--working-directory", targetPath] };
+  }
+  if (terminal === "windows-terminal") return { command: "wt.exe", args: ["-d", targetPath] };
+  if (terminal === "gnome-terminal") return { command: "gnome-terminal", args: ["--working-directory", targetPath] };
+  if (terminal === "konsole") return { command: "konsole", args: ["--workdir", targetPath] };
+  return { command: "x-terminal-emulator", args: ["--working-directory", targetPath] };
+}
+
+async function getIntegrationCatalog(settings: AppSettings): Promise<IntegrationCatalog> {
+  const integrations = settings.integrations;
+  const editors = await Promise.all(
+    editorIntegrationDefinitions().map(async (item) => ({
+      ...item,
+      selected: item.id === integrations.editor,
+      available: item.id === "auto" || (await integrationAvailable(item.id, item.kind)),
+      command: item.id === "auto" ? null : integrationCommandLabel(item.id, item.kind)
+    }))
+  );
+  const terminals = await Promise.all(
+    terminalIntegrationDefinitions().map(async (item) => ({
+      ...item,
+      selected: item.id === integrations.terminal,
+      available: item.id === "auto" || item.id === "system" || (await integrationAvailable(item.id, item.kind)),
+      command: item.id === "auto" || item.id === "system" ? null : integrationCommandLabel(item.id, item.kind)
+    }))
+  );
+
+  return { editors, terminals, settings: integrations };
+}
+
+function editorIntegrationDefinitions(): Array<Omit<IntegrationRecord<EditorIntegrationId>, "available" | "selected" | "command">> {
+  return [
+    {
+      id: "auto",
+      kind: "editor",
+      label: "Auto",
+      description: "Usa o comportamento padrão da aplicação."
+    },
+    {
+      id: "vscode",
+      kind: "editor",
+      label: "Visual Studio Code",
+      description: "Abre worktrees com o comando code."
+    },
+    {
+      id: "cursor",
+      kind: "editor",
+      label: "Cursor",
+      description: "Abre worktrees com o comando cursor."
+    },
+    {
+      id: "windsurf",
+      kind: "editor",
+      label: "Windsurf",
+      description: "Abre worktrees com o comando windsurf."
+    },
+    {
+      id: "zed",
+      kind: "editor",
+      label: "Zed",
+      description: "Abre worktrees com o comando zed."
+    },
+    {
+      id: "sublime",
+      kind: "editor",
+      label: "Sublime Text",
+      description: "Abre worktrees com o comando subl."
+    }
+  ];
+}
+
+function terminalIntegrationDefinitions(): Array<Omit<IntegrationRecord<TerminalIntegrationId>, "available" | "selected" | "command">> {
+  return [
+    {
+      id: "auto",
+      kind: "terminal",
+      label: "Auto",
+      description: "Usa o comportamento padrão da aplicação."
+    },
+    {
+      id: "system",
+      kind: "terminal",
+      label: "Terminal do sistema",
+      description: "Usa Terminal, cmd.exe ou x-terminal-emulator."
+    },
+    {
+      id: "iterm",
+      kind: "terminal",
+      label: "iTerm",
+      description: "Abre worktrees no iTerm em macOS."
+    },
+    {
+      id: "warp",
+      kind: "terminal",
+      label: "Warp",
+      description: "Abre worktrees no Warp."
+    },
+    {
+      id: "windows-terminal",
+      kind: "terminal",
+      label: "Windows Terminal",
+      description: "Abre worktrees com wt.exe."
+    },
+    {
+      id: "x-terminal-emulator",
+      kind: "terminal",
+      label: "x-terminal-emulator",
+      description: "Abre worktrees no terminal padrão Linux."
+    },
+    {
+      id: "gnome-terminal",
+      kind: "terminal",
+      label: "GNOME Terminal",
+      description: "Abre worktrees no GNOME Terminal."
+    },
+    {
+      id: "konsole",
+      kind: "terminal",
+      label: "Konsole",
+      description: "Abre worktrees no Konsole."
+    }
+  ];
+}
+
+async function integrationAvailable(id: EditorIntegrationId | TerminalIntegrationId, kind: "editor" | "terminal"): Promise<boolean> {
+  const command = integrationCommandName(id, kind);
+  if (command && (await commandExists(command))) return true;
+
+  if (process.platform !== "darwin") return false;
+  const appName = macIntegrationAppName(id);
+  return appName ? pathExists(path.join("/Applications", `${appName}.app`)) : false;
+}
+
+function integrationCommandName(id: EditorIntegrationId | TerminalIntegrationId, kind: "editor" | "terminal"): string | null {
+  if (kind === "editor") {
+    if (id === "vscode") return process.platform === "win32" ? "code.cmd" : "code";
+    if (id === "sublime") return process.platform === "win32" ? "sublime_text.exe" : "subl";
+    if (id === "auto") return null;
+    return process.platform === "win32" ? `${id}.cmd` : id;
+  }
+
+  if (id === "warp") return process.platform === "darwin" ? null : "warp-terminal";
+  if (id === "windows-terminal") return "wt.exe";
+  if (id === "x-terminal-emulator" || id === "gnome-terminal" || id === "konsole") return id;
+  return null;
+}
+
+function integrationCommandLabel(id: EditorIntegrationId | TerminalIntegrationId, kind: "editor" | "terminal"): string | null {
+  const command = integrationCommandName(id, kind);
+  if (command) return command;
+  if (id === "iterm") return "open -a iTerm";
+  if (id === "warp") return process.platform === "darwin" ? "open -a Warp" : "warp-terminal";
+  return null;
+}
+
+function macIntegrationAppName(id: EditorIntegrationId | TerminalIntegrationId): string | null {
+  if (id === "vscode") return "Visual Studio Code";
+  if (id === "cursor") return "Cursor";
+  if (id === "windsurf") return "Windsurf";
+  if (id === "zed") return "Zed";
+  if (id === "sublime") return "Sublime Text";
+  if (id === "iterm") return "iTerm";
+  if (id === "warp") return "Warp";
+  return null;
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  const candidates = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .flatMap((directory) => {
+      const base = path.join(directory, command);
+      if (process.platform !== "win32") return [base];
+      const extensions = (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";");
+      return path.extname(command) ? [base] : extensions.map((extension) => `${base}${extension.toLowerCase()}`);
+    });
+
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // Keep scanning PATH entries.
+    }
+  }
+
+  return false;
 }
 
 function folderOpenCommand(targetPath: string, platform: NodeJS.Platform): OpenCommand {

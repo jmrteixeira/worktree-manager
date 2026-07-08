@@ -7,11 +7,18 @@
     "dev": "concurrently -k -n backend,frontend -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "desktop": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:build:windows": "tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis,msi",
+    "desktop:info": "tauri info",
     "build": "tsc --noEmit && vite build",
+    "build:desktop-ui": "tsc --noEmit && vite build --mode desktop",
     "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "lucide-react": "^0.468.0",
@@ -19,6 +26,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/react": "^15.0.7",
     "@types/cors": "^2.8.17",
