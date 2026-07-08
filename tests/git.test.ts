@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   defaultWorktreeName,
@@ -20,17 +21,19 @@ describe("git parsing", () => {
       ""
     ].join("\n");
 
-    const worktrees = parseWorktreePorcelain(output, "/tmp/project");
+    const currentPath = "/tmp/project";
+    const featurePath = "/tmp/project-feature-auth";
+    const worktrees = parseWorktreePorcelain(output, currentPath);
 
     expect(worktrees).toHaveLength(2);
     expect(worktrees[0]).toMatchObject({
-      path: "/tmp/project",
+      path: path.normalize(currentPath),
       branch: "main",
       head: "a1b2c3d4",
       isCurrent: true
     });
     expect(worktrees[1]).toMatchObject({
-      path: "/tmp/project-feature-auth",
+      path: path.normalize(featurePath),
       branch: "feature/auth",
       isCurrent: false
     });
