@@ -34,6 +34,42 @@ export type WorktreeRecord = {
   detached: boolean;
   bare: boolean;
   lastCommit: CommitInfo | null;
+  status?: GitStatusSummary;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+};
+
+export type GitFileStatus = {
+  path: string;
+  originalPath: string | null;
+  indexStatus: string;
+  worktreeStatus: string;
+  label: string;
+};
+
+export type GitStatusSummary = {
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  total: number;
+  clean: boolean;
+};
+
+export type RepoDetail = {
+  repo: RepoRecord;
+  worktree: WorktreeRecord;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  lastFetchAt: string | null;
+  stashCount: number;
+  status: GitStatusSummary;
+  files: GitFileStatus[];
+  worktrees: WorktreeRecord[];
+  lastUpdatedAt: string;
 };
 
 export type WorktreeHandoffResult = {
@@ -58,6 +94,8 @@ export type BranchRecord = {
   isRemote: boolean;
   head: string | null;
   lastCommit: CommitInfo | null;
+  ahead?: number;
+  behind?: number;
 };
 
 export type RepoSummary = {
@@ -69,6 +107,13 @@ export type RepoSummary = {
   commitCount: number;
   branchCount: number;
   worktreeCount: number;
+  dirtyWorktreeCount?: number;
+  changedFileCount?: number;
+  stashCount?: number;
+  ahead?: number;
+  behind?: number;
+  branchAheadCount?: number;
+  branchBehindCount?: number;
   lastUpdatedAt: string;
 };
 
@@ -82,8 +127,17 @@ export type OperationRecord = {
   status: "success" | "error";
   exitCode: number | null;
   summary: string;
+  stdout?: string;
   stderr: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+  durationMs?: number;
+  timeoutMs?: number;
+  timedOut?: boolean;
+  signal?: string | null;
 };
+
+export type OpenTarget = "folder" | "editor" | "terminal";
 
 export type ApiError = {
   error: string;

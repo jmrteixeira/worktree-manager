@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultWorktreeName,
+  getBranches,
+  getRepoDetail,
   getRepoSummary,
   getWorktrees,
   handoffWorktreeBranchToLocal,
@@ -15,6 +17,7 @@ import {
   runGit,
   validateRepository
 } from "../server/git";
+import { buildOpenCommand, isAllowedOrigin, validateOpenTarget } from "../server/app";
 import { AppStore } from "../server/store";
 
 const execFileAsync = promisify(execFile);
@@ -60,7 +63,213 @@ describe("api", () => {
       currentBranch: "main",
       commitCount: 1,
       branchCount: 1,
-      worktreeCount: 1
+      worktreeCount: 1,
+      dirtyWorktreeCount: 0,
+      changedFileCount: 0,
+      stashCount: 0
+    });
+    await expect(store.listOperations()).resolves.toEqual([]);
+  });
+
+  it("returns detail data for a dirty worktree", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await fs.appendFile(path.join(repo.path, "README.md"), "dirty work\n");
+    await fs.writeFile(path.join(repo.path, "staged.txt"), "staged\n");
+    await fs.writeFile(path.join(repo.path, "notes.txt"), "untracked\n");
+    await git(repo.path, "add", "staged.txt");
+
+    const detail = await getRepoDetail(repo, repo.path, store);
+
+    expect(detail).toMatchObject({
+      branch: "main",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      stashCount: 0,
+      status: {
+        staged: 1,
+        unstaged: 1,
+        untracked: 1,
+        conflicted: 0,
+        total: 3,
+        clean: false
+      }
+    });
+    expect(detail.files.map((file) => file.path).sort()).toEqual(["README.md", "notes.txt", "staged.txt"]);
+    expect(detail.worktree.path).toBe(repo.path);
+    expect(detail.worktree.status).toMatchObject({
+      staged: 1,
+      unstaged: 1,
+      untracked: 1,
+      conflicted: 0,
+      total: 3,
+      clean: false
+    });
+    expect(detail.worktrees).toHaveLength(1);
+  });
+
+  it("counts repository stashes in summary and detail data", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await fs.appendFile(path.join(repo.path, "README.md"), "stash me\n");
+    await runGit(repo.path, ["stash", "push", "--include-untracked", "--message", "saved local work"], store);
+
+    const [summary, detail] = await Promise.all([
+      getRepoSummary(repo, repo.path, store),
+      getRepoDetail(repo, repo.path, store)
+    ]);
+
+    expect(summary.stashCount).toBe(1);
+    expect(detail.stashCount).toBe(1);
+    expect(detail.status.clean).toBe(true);
+  });
+
+  it("detects ahead and behind state against upstream branches", async () => {
+    const remoteDir = path.join(tmpDir, "remote.git");
+    const cloneDir = path.join(tmpDir, "remote-clone");
+    await fs.mkdir(remoteDir);
+    await git(remoteDir, "init", "--bare");
+    await git(repoDir, "remote", "add", "origin", remoteDir);
+    await git(repoDir, "push", "-u", "origin", "main");
+
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+
+    await fs.appendFile(path.join(repo.path, "README.md"), "local ahead\n");
+    await git(repo.path, "add", "README.md");
+    await git(repo.path, "commit", "-m", "local ahead");
+
+    await git(tmpDir, "clone", remoteDir, cloneDir);
+    await git(cloneDir, "config", "user.email", "remote@example.com");
+    await git(cloneDir, "config", "user.name", "Remote User");
+    try {
+      await git(cloneDir, "switch", "main");
+    } catch {
+      await git(cloneDir, "switch", "-c", "main", "origin/main");
+    }
+    await fs.appendFile(path.join(cloneDir, "README.md"), "remote ahead\n");
+    await git(cloneDir, "add", "README.md");
+    await git(cloneDir, "commit", "-m", "remote ahead");
+    await git(cloneDir, "push", "origin", "HEAD:main");
+    await git(repo.path, "fetch", "origin");
+
+    const [summary, branches, worktrees] = await Promise.all([
+      getRepoSummary(repo, repo.path, store),
+      getBranches(repo.path, store),
+      getWorktrees(repo.path, repo.path, store)
+    ]);
+    const mainBranch = branches.find((branch) => branch.name === "main");
+
+    expect(summary).toMatchObject({
+      ahead: 1,
+      behind: 1,
+      branchAheadCount: 1,
+      branchBehindCount: 1
+    });
+    expect(mainBranch).toMatchObject({
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 1
+    });
+    expect(worktrees[0]).toMatchObject({
+      upstream: "origin/main",
+      ahead: 1,
+      behind: 1
+    });
+  });
+
+  it("records detailed logs for git operations", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+
+    await runGit(repo.path, ["status", "--short", "--branch"], store);
+    await runGit(repo.path, ["definitely-not-a-git-command"], store, { allowFailure: true });
+
+    const operations = await store.listOperations();
+    const failed = operations[0];
+    const successful = operations[1];
+
+    expect(failed).toMatchObject({
+      command: "git",
+      args: ["definitely-not-a-git-command"],
+      cwd: repo.path,
+      status: "error",
+      stdout: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      timeoutMs: 30_000
+    });
+    expect(failed.stderr).toContain("git");
+    expect(failed.durationMs).toEqual(expect.any(Number));
+
+    expect(successful).toMatchObject({
+      command: "git",
+      args: ["status", "--short", "--branch"],
+      cwd: repo.path,
+      status: "success",
+      exitCode: 0,
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false
+    });
+    expect(successful.stdout).toContain("## main");
+    await expect(store.getOperation(successful.id)).resolves.toMatchObject({
+      id: successful.id,
+      stdout: successful.stdout
+    });
+  });
+
+  it("rejects browser origins outside the local allow-list", async () => {
+    expect(isAllowedOrigin("http://localhost:5173")).toBe(true);
+    expect(isAllowedOrigin("http://127.0.0.1:5173")).toBe(true);
+    expect(isAllowedOrigin("http://example.invalid")).toBe(false);
+  });
+
+  it("rejects opening paths outside known repositories", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    await store.upsertRepo(topLevelPath);
+    const outsidePath = path.join(tmpDir, "outside.txt");
+    await fs.writeFile(outsidePath, "outside\n");
+
+    await expect(validateOpenTarget(store, outsidePath)).rejects.toThrow(
+      "Só é possível abrir caminhos dentro de repositórios ou worktrees conhecidos."
+    );
+    await expect(validateOpenTarget(store, path.join(repoDir, "README.md"))).resolves.toBe(
+      await fs.realpath(path.join(repoDir, "README.md"))
+    );
+  });
+
+  it("builds folder, editor and terminal open commands without shell interpolation", () => {
+    expect(buildOpenCommand("/tmp/repo", "folder", "darwin", {})).toEqual({
+      command: "open",
+      args: ["/tmp/repo"]
+    });
+    expect(buildOpenCommand("/tmp/repo", "editor", "darwin", {})).toEqual({
+      command: "open",
+      args: ["-a", "Visual Studio Code", "/tmp/repo"]
+    });
+    expect(buildOpenCommand("/tmp/repo", "terminal", "darwin", {})).toEqual({
+      command: "open",
+      args: ["-a", "Terminal", "/tmp/repo"]
+    });
+    expect(
+      buildOpenCommand("/tmp/repo", "editor", "linux", {
+        WORKTREE_MANAGER_EDITOR: "code --reuse-window"
+      })
+    ).toEqual({
+      command: "code",
+      args: ["--reuse-window", "/tmp/repo"]
+    });
+    expect(
+      buildOpenCommand("/tmp/repo", "terminal", "linux", {
+        WORKTREE_MANAGER_TERMINAL: "ghostty --working-directory={path}"
+      })
+    ).toEqual({
+      command: "ghostty",
+      args: ["--working-directory=/tmp/repo"]
     });
   });
 

@@ -1,13 +1,16 @@
 import type {
   BranchRecord,
   FsListResponse,
+  RepoDetail,
   LocalBranchWorktreeResult,
+  OpenTarget,
   OperationRecord,
   RepoRecord,
   RepoSummary,
   WorktreeHandoffResult,
   WorktreeRecord
 } from "./types";
+import { visualApi } from "./visualApi";
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
@@ -33,7 +36,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-export const api = {
+const httpApi = {
   listFs(path?: string) {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FsListResponse>(`/api/fs${query}`);
@@ -52,6 +55,9 @@ export const api = {
   },
   worktrees(repoId: string, worktreePath?: string) {
     return request<WorktreeRecord[]>(withWorktreeQuery(`/api/repos/${repoId}/worktrees`, worktreePath));
+  },
+  detail(repoId: string, worktreePath?: string) {
+    return request<RepoDetail>(withWorktreeQuery(`/api/repos/${repoId}/detail`, worktreePath));
   },
   createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string }) {
     return request<{ path: string }>(`/api/repos/${repoId}/worktrees`, {
@@ -115,18 +121,27 @@ export const api = {
       body: JSON.stringify({ worktreePath })
     });
   },
-  openPath(path: string) {
+  openPath(path: string, target: OpenTarget = "folder") {
     return request<{ ok: boolean }>("/api/open", {
       method: "POST",
-      body: JSON.stringify({ path })
+      body: JSON.stringify({ path, target })
     });
   },
   operations() {
     return request<OperationRecord[]>("/api/operations");
+  },
+  operation(operationId: string) {
+    return request<OperationRecord>(`/api/operations/${encodeURIComponent(operationId)}`);
   }
 };
+
+export const api = isVisualMode() ? visualApi : httpApi;
 
 function withWorktreeQuery(url: string, worktreePath?: string) {
   if (!worktreePath) return url;
   return `${url}?worktreePath=${encodeURIComponent(worktreePath)}`;
+}
+
+function isVisualMode() {
+  return typeof window !== "undefined" && new URLSearchParams(window.location.search).has("visual");
 }

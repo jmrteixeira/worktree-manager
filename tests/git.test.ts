@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   defaultWorktreeName,
   parseBranchRefs,
+  parseStatusPorcelain,
   parseWorktreePorcelain,
   sanitizeFilePart
 } from "../server/git";
@@ -61,5 +62,42 @@ describe("git parsing", () => {
     expect(defaultWorktreeName("WorktreeManager", "feature/auth")).toBe(
       "WorktreeManager-feature-auth"
     );
+  });
+
+  it("parses porcelain file status", () => {
+    const output = [" M README.md", "A  staged.txt", "?? notes.txt", "R  old.txt -> new.txt"].join("\n");
+
+    const files = parseStatusPorcelain(output);
+
+    expect(files).toEqual([
+      {
+        path: "README.md",
+        originalPath: null,
+        indexStatus: " ",
+        worktreeStatus: "M",
+        label: "Modificado"
+      },
+      {
+        path: "staged.txt",
+        originalPath: null,
+        indexStatus: "A",
+        worktreeStatus: " ",
+        label: "Adicionado"
+      },
+      {
+        path: "notes.txt",
+        originalPath: null,
+        indexStatus: "?",
+        worktreeStatus: "?",
+        label: "Por seguir"
+      },
+      {
+        path: "new.txt",
+        originalPath: "old.txt",
+        indexStatus: "R",
+        worktreeStatus: " ",
+        label: "Renomeado"
+      }
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { OperationRecord, RepoRecord } from "../src/types";
 
@@ -17,7 +18,8 @@ export class AppStore {
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly stateFile = path.join(process.cwd(), ".worktree-manager", "state.json")
+    private readonly stateFile = path.join(process.cwd(), ".worktree-manager", "state.json"),
+    private readonly fallbackStateFiles: string[] = []
   ) {}
 
   async listRepos(): Promise<RepoRecord[]> {
@@ -65,16 +67,28 @@ export class AppStore {
     return state.operations;
   }
 
+  async getOperation(operationId: string): Promise<OperationRecord | null> {
+    const state = await this.readState();
+    return state.operations.find((operation) => operation.id === operationId) ?? null;
+  }
+
   private async readState(): Promise<AppState> {
     try {
-      const contents = await fs.readFile(this.stateFile, "utf8");
-      const parsed = JSON.parse(contents) as AppState;
-      return {
-        repos: Array.isArray(parsed.repos) ? parsed.repos : [],
-        operations: Array.isArray(parsed.operations) ? parsed.operations : []
-      };
+      return parseState(await fs.readFile(this.stateFile, "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        for (const fallbackFile of this.fallbackStateFiles) {
+          try {
+            const state = parseState(await fs.readFile(fallbackFile, "utf8"));
+            await this.writeState(state);
+            return state;
+          } catch (fallbackError) {
+            if ((fallbackError as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw fallbackError;
+            }
+          }
+        }
+
         return { ...defaultState };
       }
 
@@ -107,5 +121,40 @@ export class AppStore {
 }
 
 export function createDefaultStore(): AppStore {
-  return new AppStore();
+  return new AppStore(defaultStateFile(), [legacyStateFile()]);
+}
+
+function parseState(contents: string): AppState {
+  const parsed = JSON.parse(contents) as AppState;
+  return {
+    repos: Array.isArray(parsed.repos) ? parsed.repos : [],
+    operations: Array.isArray(parsed.operations) ? parsed.operations : []
+  };
+}
+
+function defaultStateFile(): string {
+  const configuredDir = process.env.WORKTREE_MANAGER_STATE_DIR;
+  if (configuredDir) return path.join(configuredDir, "state.json");
+
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "Worktree Manager", "state.json");
+  }
+
+  if (process.platform === "win32") {
+    return path.join(
+      process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+      "Worktree Manager",
+      "state.json"
+    );
+  }
+
+  return path.join(
+    process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state"),
+    "worktree-manager",
+    "state.json"
+  );
+}
+
+function legacyStateFile(): string {
+  return path.join(process.cwd(), ".worktree-manager", "state.json");
 }

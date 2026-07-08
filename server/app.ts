@@ -5,10 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { Request, Response, NextFunction } from "express";
+import type { OpenTarget } from "../src/types";
 import {
   decodePathId,
   defaultWorktreeName,
   getBranches,
+  getRepoDetail,
   getRepoSummary,
   getWorktrees,
   GitCommandError,
@@ -25,7 +27,21 @@ type AsyncRoute = (req: Request, res: Response, next: NextFunction) => Promise<v
 
 export function createApp(store: AppStore = createDefaultStore()) {
   const app = express();
-  app.use(cors());
+  const runExclusiveRepoTask = createRepoTaskQueue();
+
+  app.disable("x-powered-by");
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || isAllowedOrigin(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error("Origem não permitida."));
+      }
+    })
+  );
   app.use(express.json({ limit: "1mb" }));
 
   app.get(
@@ -107,6 +123,18 @@ export function createApp(store: AppStore = createDefaultStore()) {
     })
   );
 
+  app.get(
+    "/api/repos/:repoId/detail",
+    withRepo(store, async (repo, req, res) => {
+      const focusedPath = await resolveRepoWorktreePath(
+        repo.path,
+        stringQuery(req.query.worktreePath),
+        store
+      );
+      res.json(await getRepoDetail(repo, focusedPath, store));
+    })
+  );
+
   app.post(
     "/api/repos/:repoId/worktrees",
     withRepo(store, async (repo, req, res) => {
@@ -130,8 +158,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
           ? ["worktree", "add", "-b", branch, targetPath]
           : ["worktree", "add", targetPath, branch];
 
-      await runGit(repo.path, args, store);
-      res.status(201).json({ path: targetPath });
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(repo.path, args, store, { timeoutMs: 120_000 });
+        res.status(201).json({ path: targetPath });
+      });
     })
   );
 
@@ -146,8 +176,12 @@ export function createApp(store: AppStore = createDefaultStore()) {
         return;
       }
 
-      await runGit(repo.path, ["worktree", "remove", worktreePath], store);
-      res.status(204).end();
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(repo.path, ["worktree", "remove", worktreePath], store, {
+          timeoutMs: 120_000
+        });
+        res.status(204).end();
+      });
     })
   );
 
@@ -155,13 +189,15 @@ export function createApp(store: AppStore = createDefaultStore()) {
     "/api/repos/:repoId/worktrees/move-local",
     withRepo(store, async (repo, req, res) => {
       res.json(
-        await moveLocalBranchToWorktree(
-          repo,
-          {
-            name: optionalBodyString(req.body, "name"),
-            path: optionalBodyString(req.body, "path")
-          },
-          store
+        await runExclusiveRepoTask(repo.id, () =>
+          moveLocalBranchToWorktree(
+            repo,
+            {
+              name: optionalBodyString(req.body, "name"),
+              path: optionalBodyString(req.body, "path")
+            },
+            store
+          )
         )
       );
     })
@@ -172,7 +208,11 @@ export function createApp(store: AppStore = createDefaultStore()) {
     withRepo(store, async (repo, req, res) => {
       const worktreePath = decodePathId(req.params.worktreeId);
       const focusedPath = await resolveRepoWorktreePath(repo.path, worktreePath, store);
-      res.json(await handoffWorktreeBranchToLocal(repo.path, focusedPath, store));
+      res.json(
+        await runExclusiveRepoTask(repo.id, () =>
+          handoffWorktreeBranchToLocal(repo.path, focusedPath, store)
+        )
+      );
     })
   );
 
@@ -198,8 +238,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         optionalBodyString(req.body, "worktreePath"),
         store
       );
-      await runGit(focusedPath, ["branch", name, ...(from ? [from] : [])], store);
-      res.status(201).json({ name });
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(focusedPath, ["branch", name, ...(from ? [from] : [])], store);
+        res.status(201).json({ name });
+      });
     })
   );
 
@@ -211,8 +253,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         optionalBodyString(req.body, "worktreePath"),
         store
       );
-      await runGit(focusedPath, ["switch", req.params.name], store);
-      res.json({ branch: req.params.name });
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(focusedPath, ["switch", req.params.name], store);
+        res.json({ branch: req.params.name });
+      });
     })
   );
 
@@ -231,8 +275,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         optionalBodyString(req.body, "worktreePath"),
         store
       );
-      await runGit(focusedPath, ["branch", req.body?.force === true ? "-D" : "-d", name], store);
-      res.status(204).end();
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(focusedPath, ["branch", req.body?.force === true ? "-D" : "-d", name], store);
+        res.status(204).end();
+      });
     })
   );
 
@@ -244,8 +290,10 @@ export function createApp(store: AppStore = createDefaultStore()) {
         optionalBodyString(req.body, "worktreePath"),
         store
       );
-      await runGit(focusedPath, ["fetch", "--prune"], store);
-      res.json({ ok: true });
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(focusedPath, ["fetch", "--prune"], store, { timeoutMs: 120_000 });
+        res.json({ ok: true });
+      });
     })
   );
 
@@ -257,17 +305,20 @@ export function createApp(store: AppStore = createDefaultStore()) {
         optionalBodyString(req.body, "worktreePath"),
         store
       );
-      await runGit(focusedPath, ["pull", "--ff-only"], store);
-      res.json({ ok: true });
+      await runExclusiveRepoTask(repo.id, async () => {
+        await runGit(focusedPath, ["pull", "--ff-only"], store, { timeoutMs: 120_000 });
+        res.json({ ok: true });
+      });
     })
   );
 
   app.post(
     "/api/open",
     asyncHandler(async (req, res) => {
-      const targetPath = requiredBodyString(req.body, "path");
-      await openPath(targetPath);
-      res.json({ ok: true });
+      const targetPath = await validateOpenTarget(store, requiredBodyString(req.body, "path"));
+      const target = openTargetFromBody(req.body);
+      await openPath(targetPath, target);
+      res.json({ ok: true, target });
     })
   );
 
@@ -275,6 +326,19 @@ export function createApp(store: AppStore = createDefaultStore()) {
     "/api/operations",
     asyncHandler(async (_req, res) => {
       res.json(await store.listOperations());
+    })
+  );
+
+  app.get(
+    "/api/operations/:operationId",
+    asyncHandler(async (req, res) => {
+      const operation = await store.getOperation(req.params.operationId);
+      if (!operation) {
+        res.status(404).json({ error: "Operação não encontrada." });
+        return;
+      }
+
+      res.json(operation);
     })
   );
 
@@ -337,6 +401,49 @@ function optionalBodyString(body: unknown, key: string): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function openTargetFromBody(body: unknown): OpenTarget {
+  const value = (body as Record<string, unknown> | null)?.target;
+  if (value === undefined || value === null || value === "") return "folder";
+  if (value === "folder" || value === "editor" || value === "terminal") return value;
+  throw new Error("Destino de abertura inválido.");
+}
+
+function createRepoTaskQueue() {
+  const queues = new Map<string, Promise<void>>();
+
+  return async function runExclusiveRepoTask<T>(repoId: string, task: () => Promise<T>): Promise<T> {
+    const previous = queues.get(repoId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    const normalized = run.then(
+      () => undefined,
+      () => undefined
+    );
+
+    queues.set(repoId, normalized);
+
+    try {
+      return await run;
+    } finally {
+      if (queues.get(repoId) === normalized) {
+        queues.delete(repoId);
+      }
+    }
+  };
+}
+
+export function isAllowedOrigin(origin: string): boolean {
+  return getAllowedOrigins().has(origin);
+}
+
+function getAllowedOrigins(): Set<string> {
+  const configured = process.env.WORKTREE_MANAGER_ALLOWED_ORIGINS;
+  const values = configured
+    ? configured.split(",")
+    : ["http://localhost:5173", "http://127.0.0.1:5173"];
+
+  return new Set(values.map((value) => value.trim()).filter(Boolean));
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -346,19 +453,63 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function openPath(targetPath: string): Promise<void> {
-  const opener =
-    process.platform === "darwin"
-      ? { command: "open", args: [targetPath] }
-      : process.platform === "win32"
-        ? { command: "explorer.exe", args: [targetPath] }
-        : { command: "xdg-open", args: [targetPath] };
+export async function validateOpenTarget(store: AppStore, targetPath: string): Promise<string> {
+  const resolvedTarget = path.resolve(targetPath);
+  const target = await realExistingPath(resolvedTarget);
+  const repos = await store.listRepos();
 
+  for (const repo of repos) {
+    const roots = new Set<string>([repo.path]);
+
+    try {
+      const worktrees = await getWorktrees(repo.path, repo.path, store);
+      for (const worktree of worktrees) {
+        if (worktree.path) roots.add(worktree.path);
+      }
+    } catch {
+      roots.add(repo.path);
+    }
+
+    for (const root of roots) {
+      const comparableRoot = await realPathOrResolved(root);
+      if (isSameOrInside(target, comparableRoot)) {
+        return target;
+      }
+    }
+  }
+
+  throw new Error("Só é possível abrir caminhos dentro de repositórios ou worktrees conhecidos.");
+}
+
+async function realExistingPath(targetPath: string): Promise<string> {
+  try {
+    return await fs.realpath(targetPath);
+  } catch {
+    throw new Error("O caminho indicado não existe.");
+  }
+}
+
+async function realPathOrResolved(targetPath: string): Promise<string> {
+  return fs.realpath(path.resolve(targetPath)).catch(() => path.resolve(targetPath));
+}
+
+function isSameOrInside(targetPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === "" || (Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+type OpenCommand = {
+  command: string;
+  args: string[];
+};
+
+async function openPath(targetPath: string, target: OpenTarget): Promise<void> {
+  const opener = buildOpenCommand(targetPath, target);
   await new Promise<void>((resolve, reject) => {
     const child = spawn(opener.command, opener.args, {
       detached: true,
       stdio: "ignore",
-      windowsHide: true
+      windowsHide: target !== "terminal"
     });
     child.on("error", reject);
     child.on("spawn", () => {
@@ -366,4 +517,75 @@ async function openPath(targetPath: string): Promise<void> {
       resolve();
     });
   });
+}
+
+export function buildOpenCommand(
+  targetPath: string,
+  target: OpenTarget,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): OpenCommand {
+  if (target === "folder") return folderOpenCommand(targetPath, platform);
+
+  if (target === "editor") {
+    const configured = env.WORKTREE_MANAGER_EDITOR?.trim();
+    if (configured) return configuredOpenCommand(configured, targetPath);
+
+    if (platform === "darwin") {
+      return {
+        command: "open",
+        args: ["-a", env.WORKTREE_MANAGER_EDITOR_APP?.trim() || "Visual Studio Code", targetPath]
+      };
+    }
+
+    return { command: platform === "win32" ? "code.cmd" : "code", args: [targetPath] };
+  }
+
+  const configured = env.WORKTREE_MANAGER_TERMINAL?.trim();
+  if (configured) return configuredOpenCommand(configured, targetPath);
+
+  if (platform === "darwin") {
+    return { command: "open", args: ["-a", env.WORKTREE_MANAGER_TERMINAL_APP?.trim() || "Terminal", targetPath] };
+  }
+
+  if (platform === "win32") {
+    return { command: "cmd.exe", args: ["/K", "cd", "/d", targetPath] };
+  }
+
+  return { command: "x-terminal-emulator", args: ["--working-directory", targetPath] };
+}
+
+function folderOpenCommand(targetPath: string, platform: NodeJS.Platform): OpenCommand {
+  if (platform === "darwin") return { command: "open", args: [targetPath] };
+  if (platform === "win32") return { command: "explorer.exe", args: [targetPath] };
+  return { command: "xdg-open", args: [targetPath] };
+}
+
+function configuredOpenCommand(configured: string, targetPath: string): OpenCommand {
+  const parts = splitCommand(configured);
+  if (!parts.length) {
+    throw new Error("Comando de abertura inválido.");
+  }
+
+  const replaced = parts.map((part) => part.replace(/\{path\}/g, targetPath));
+  if (!parts.some((part) => part.includes("{path}"))) {
+    replaced.push(targetPath);
+  }
+
+  return {
+    command: replaced[0],
+    args: replaced.slice(1)
+  };
+}
+
+function splitCommand(value: string): string[] {
+  const parts: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(value))) {
+    parts.push(match[1] ?? match[2] ?? match[3]);
+  }
+
+  return parts;
 }

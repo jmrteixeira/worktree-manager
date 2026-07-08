@@ -5,7 +5,10 @@ import path from "node:path";
 import type {
   BranchRecord,
   CommitInfo,
+  GitFileStatus,
+  GitStatusSummary,
   LocalBranchWorktreeResult,
+  RepoDetail,
   RepoRecord,
   RepoSummary,
   WorktreeRecord
@@ -18,17 +21,24 @@ type GitResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  signal: NodeJS.Signals | null;
   startedAt: string;
+  durationMs: number;
+  timedOut: boolean;
+  timeoutMs: number;
 };
 
 type RunGitOptions = {
   allowFailure?: boolean;
+  record?: boolean;
   timeoutMs?: number;
 };
 
 type StashHandle = {
   message: string;
 };
+
+const MAX_OPERATION_LOG_CHARS = 20_000;
 
 export class GitCommandError extends Error {
   constructor(readonly result: GitResult) {
@@ -52,6 +62,7 @@ export async function runGit(
   options: RunGitOptions = {}
 ): Promise<GitResult> {
   const startedAt = new Date().toISOString();
+  const startedAtMs = Date.now();
   const timeoutMs = options.timeoutMs ?? 30_000;
 
   const result = await new Promise<GitResult>((resolve) => {
@@ -63,7 +74,9 @@ export async function runGit(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     const timeout = setTimeout(() => {
+      timedOut = true;
       stderr += `\nComando excedeu ${timeoutMs}ms.`;
       child.kill("SIGTERM");
     }, timeoutMs);
@@ -86,30 +99,53 @@ export async function runGit(
         stdout,
         stderr: stderr || error.message,
         exitCode: 1,
-        startedAt
+        signal: null,
+        startedAt,
+        durationMs: Date.now() - startedAtMs,
+        timedOut,
+        timeoutMs
       });
     });
-    child.on("close", (exitCode) => {
+    child.on("close", (exitCode, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve({ args, cwd, stdout, stderr, exitCode, startedAt });
+      resolve({
+        args,
+        cwd,
+        stdout,
+        stderr,
+        exitCode,
+        signal,
+        startedAt,
+        durationMs: Date.now() - startedAtMs,
+        timedOut,
+        timeoutMs
+      });
     });
   });
 
-  await store?.recordOperation({
-    command: "git",
-    args,
-    cwd,
-    startedAt: result.startedAt,
-    status: result.exitCode === 0 ? "success" : "error",
-    exitCode: result.exitCode,
-    summary:
-      result.exitCode === 0
-        ? firstLine(result.stdout) || `git ${args.join(" ")} concluído`
-        : firstLine(result.stderr) || `git ${args.join(" ")} falhou`,
-    stderr: result.stderr.trim()
-  });
+  if (options.record !== false) {
+    const stdoutLog = limitOperationLog(result.stdout);
+    const stderrLog = limitOperationLog(result.stderr);
+    await store?.recordOperation({
+      command: "git",
+      args,
+      cwd,
+      startedAt: result.startedAt,
+      status: result.exitCode === 0 ? "success" : "error",
+      exitCode: result.exitCode,
+      summary: summarizeGitResult(result),
+      stdout: stdoutLog.value,
+      stderr: stderrLog.value,
+      stdoutTruncated: stdoutLog.truncated,
+      stderrTruncated: stderrLog.truncated,
+      durationMs: result.durationMs,
+      timeoutMs: result.timeoutMs,
+      timedOut: result.timedOut,
+      signal: result.signal
+    });
+  }
 
   if (!options.allowFailure && result.exitCode !== 0) {
     throw new GitCommandError(result);
@@ -125,7 +161,9 @@ export async function validateRepository(repoPath: string, store?: AppStore): Pr
     throw new Error("O caminho selecionado não é uma pasta.");
   }
 
-  const result = await runGit(resolvedPath, ["rev-parse", "--show-toplevel"], store);
+  const result = await runGit(resolvedPath, ["rev-parse", "--show-toplevel"], store, {
+    record: false
+  });
   return path.resolve(result.stdout.trim());
 }
 
@@ -196,6 +234,39 @@ export function parseBranchRefs(stdout: string, currentBranch: string): BranchRe
       if (b.current) return 1;
       if (a.isRemote !== b.isRemote) return a.isRemote ? 1 : -1;
       return a.name.localeCompare(b.name);
+    });
+}
+
+export function parseStatusPorcelain(stdout: string): GitFileStatus[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      if (line.startsWith("?? ")) {
+        return {
+          path: line.slice(3),
+          originalPath: null,
+          indexStatus: "?",
+          worktreeStatus: "?",
+          label: "Por seguir"
+        } satisfies GitFileStatus;
+      }
+
+      const indexStatus = line[0] || " ";
+      const worktreeStatus = line[1] || " ";
+      const rawPath = line.slice(3);
+      const renameParts = rawPath.split(" -> ");
+      const originalPath = renameParts.length > 1 ? renameParts[0] : null;
+      const filePath = renameParts.length > 1 ? renameParts.slice(1).join(" -> ") : rawPath;
+
+      return {
+        path: filePath,
+        originalPath,
+        indexStatus,
+        worktreeStatus,
+        label: fileStatusLabel(indexStatus, worktreeStatus)
+      } satisfies GitFileStatus;
     });
 }
 
@@ -386,26 +457,45 @@ export async function getWorktrees(
   focusedPath = repoPath,
   store?: AppStore
 ): Promise<WorktreeRecord[]> {
-  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store);
+  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store, {
+    record: false
+  });
   const worktrees = parseWorktreePorcelain(porcelain.stdout, focusedPath);
 
   return Promise.all(
-    worktrees.map(async (worktree) => ({
-      ...worktree,
-      lastCommit:
-        worktree.bare || !worktree.path
-          ? null
-          : parseCommitLine(
-              (
-                await runGit(
-                  worktree.path,
-                  ["log", "-1", "--format=%h%x09%cI%x09%s"],
-                  store,
-                  { allowFailure: true }
-                )
-              ).stdout
-            )
-    }))
+    worktrees.map(async (worktree) => {
+      if (worktree.bare || !worktree.path) {
+        return {
+          ...worktree,
+          lastCommit: null,
+          status: summarizeFileStatuses([])
+        };
+      }
+
+      const [lastCommitResult, statusResult, upstream] = await Promise.all([
+        runGit(worktree.path, ["log", "-1", "--format=%h%x09%cI%x09%s"], store, {
+          allowFailure: true,
+          record: false
+        }),
+        runGit(worktree.path, ["status", "--porcelain=v1", "-uall"], store, {
+          allowFailure: true,
+          record: false
+        }),
+        getUpstreamBranch(worktree.path, store)
+      ]);
+
+      const files = statusResult.exitCode === 0 ? parseStatusPorcelain(statusResult.stdout) : [];
+      const sync = upstream ? await getAheadBehind(worktree.path, upstream, store) : { ahead: 0, behind: 0 };
+
+      return {
+        ...worktree,
+        lastCommit: parseCommitLine(lastCommitResult.stdout),
+        status: summarizeFileStatuses(files),
+        upstream,
+        ahead: sync.ahead,
+        behind: sync.behind
+      };
+    })
   );
 }
 
@@ -422,10 +512,61 @@ export async function getBranches(
       "refs/heads",
       "refs/remotes"
     ],
-    store
+    store,
+    { record: false }
   );
 
-  return parseBranchRefs(refs.stdout, currentBranch);
+  const branches = parseBranchRefs(refs.stdout, currentBranch);
+
+  return Promise.all(
+    branches.map(async (branch) => {
+      if (branch.isRemote || !branch.upstream) {
+        return { ...branch, ahead: 0, behind: 0 };
+      }
+
+      const sync = await getAheadBehindRefs(repoPath, branch.name, branch.upstream, store);
+      return { ...branch, ahead: sync.ahead, behind: sync.behind };
+    })
+  );
+}
+
+export async function getRepoDetail(
+  repo: RepoRecord,
+  focusedPath = repo.path,
+  store?: AppStore
+): Promise<RepoDetail> {
+  const [worktrees, statusResult, branch, upstream, lastFetchAt, stashCount] = await Promise.all([
+    getWorktrees(repo.path, focusedPath, store),
+    runGit(focusedPath, ["status", "--porcelain=v1", "-uall"], store, { record: false }),
+    getCheckedOutBranch(focusedPath, store),
+    getUpstreamBranch(focusedPath, store),
+    getLastFetchAt(focusedPath, store),
+    getStashCount(repo.path, store)
+  ]);
+  const worktree =
+    worktrees.find((item) => path.resolve(item.path) === path.resolve(focusedPath)) ??
+    worktrees.find((item) => item.isCurrent);
+  if (!worktree) {
+    throw new Error("A worktree selecionada não pertence a este repositório.");
+  }
+
+  const sync = upstream ? await getAheadBehind(focusedPath, upstream, store) : { ahead: 0, behind: 0 };
+  const files = parseStatusPorcelain(statusResult.stdout);
+
+  return {
+    repo,
+    worktree,
+    branch,
+    upstream,
+    ahead: sync.ahead,
+    behind: sync.behind,
+    lastFetchAt,
+    stashCount,
+    status: summarizeFileStatuses(files),
+    files,
+    worktrees,
+    lastUpdatedAt: new Date().toISOString()
+  };
 }
 
 export async function getRepoSummary(
@@ -433,13 +574,26 @@ export async function getRepoSummary(
   focusedPath = repo.path,
   store?: AppStore
 ): Promise<RepoSummary> {
-  const [gitVersion, currentBranch, worktrees, branches, commits] = await Promise.all([
-    runGit(focusedPath, ["--version"], store),
+  const [gitVersion, currentBranch, worktrees, branches, commits, stashCount] = await Promise.all([
+    runGit(focusedPath, ["--version"], store, { record: false }),
     getCurrentBranch(focusedPath, store),
     getWorktrees(repo.path, focusedPath, store),
     getBranches(focusedPath, store),
-    runGit(repo.path, ["rev-list", "--count", "--all"], store, { allowFailure: true })
+    runGit(repo.path, ["rev-list", "--count", "--all"], store, {
+      allowFailure: true,
+      record: false
+    }),
+    getStashCount(repo.path, store)
   ]);
+  const changedFileCount = worktrees.reduce(
+    (total, worktree) => total + (worktree.status?.total ?? 0),
+    0
+  );
+  const dirtyWorktreeCount = worktrees.filter((worktree) => worktree.status && !worktree.status.clean).length;
+  const localBranches = branches.filter((branch) => !branch.isRemote);
+  const focusedBranch = localBranches.find((branch) => branch.name === currentBranch);
+  const branchAheadCount = localBranches.filter((branch) => (branch.ahead ?? 0) > 0).length;
+  const branchBehindCount = localBranches.filter((branch) => (branch.behind ?? 0) > 0).length;
 
   return {
     repo,
@@ -450,6 +604,13 @@ export async function getRepoSummary(
     commitCount: Number.parseInt(commits.stdout.trim(), 10) || 0,
     branchCount: branches.filter((branch) => !branch.isRemote).length,
     worktreeCount: worktrees.length,
+    dirtyWorktreeCount,
+    changedFileCount,
+    stashCount,
+    ahead: focusedBranch?.ahead ?? 0,
+    behind: focusedBranch?.behind ?? 0,
+    branchAheadCount,
+    branchBehindCount,
     lastUpdatedAt: new Date().toISOString()
   };
 }
@@ -459,7 +620,8 @@ export async function getCurrentBranch(repoPath: string, store?: AppStore): Prom
   if (branchName) return branchName;
 
   const head = await runGit(repoPath, ["rev-parse", "--short", "HEAD"], store, {
-    allowFailure: true
+    allowFailure: true,
+    record: false
   });
   return head.stdout.trim() ? `detached ${head.stdout.trim()}` : "desconhecida";
 }
@@ -482,7 +644,8 @@ export function sanitizeFilePart(value: string): string {
 
 async function getCheckedOutBranch(repoPath: string, store?: AppStore): Promise<string | null> {
   const branch = await runGit(repoPath, ["branch", "--show-current"], store, {
-    allowFailure: true
+    allowFailure: true,
+    record: false
   });
   const branchName = branch.stdout.trim();
   return branchName || null;
@@ -492,15 +655,85 @@ async function getLocalBaseBranch(repoPath: string, store?: AppStore): Promise<s
   const refs = await runGit(
     repoPath,
     ["for-each-ref", "--format=%(refname:short)", "refs/heads/main", "refs/heads/master"],
-    store
+    store,
+    { record: false }
   );
   const names = new Set(refs.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
   return names.has("main") ? "main" : names.has("master") ? "master" : null;
 }
 
+async function getUpstreamBranch(repoPath: string, store?: AppStore): Promise<string | null> {
+  const upstream = await runGit(
+    repoPath,
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    store,
+    { allowFailure: true, record: false }
+  );
+  const value = upstream.stdout.trim();
+  return upstream.exitCode === 0 && value ? value : null;
+}
+
+async function getAheadBehind(
+  repoPath: string,
+  upstream: string,
+  store?: AppStore
+): Promise<{ ahead: number; behind: number }> {
+  return getAheadBehindRefs(repoPath, "HEAD", upstream, store);
+}
+
+async function getAheadBehindRefs(
+  repoPath: string,
+  leftRef: string,
+  rightRef: string,
+  store?: AppStore
+): Promise<{ ahead: number; behind: number }> {
+  const result = await runGit(repoPath, ["rev-list", "--left-right", "--count", `${leftRef}...${rightRef}`], store, {
+    allowFailure: true,
+    record: false
+  });
+  const [ahead, behind] = result.stdout.trim().split(/\s+/).map((value) => Number.parseInt(value, 10));
+  return {
+    ahead: Number.isFinite(ahead) ? ahead : 0,
+    behind: Number.isFinite(behind) ? behind : 0
+  };
+}
+
+async function getLastFetchAt(repoPath: string, store?: AppStore): Promise<string | null> {
+  const gitPath = await runGit(repoPath, ["rev-parse", "--git-path", "FETCH_HEAD"], store, {
+    allowFailure: true,
+    record: false
+  });
+  const value = gitPath.stdout.trim();
+  if (!value) return null;
+
+  const fetchHeadPath = path.isAbsolute(value) ? value : path.resolve(repoPath, value);
+  try {
+    const stat = await fs.stat(fetchHeadPath);
+    return stat.mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
 async function hasLocalChanges(repoPath: string, store?: AppStore): Promise<boolean> {
-  const status = await runGit(repoPath, ["status", "--porcelain=v1", "-uall"], store);
+  const status = await runGit(repoPath, ["status", "--porcelain=v1", "-uall"], store, {
+    record: false
+  });
   return Boolean(status.stdout.trim());
+}
+
+async function getStashCount(repoPath: string, store?: AppStore): Promise<number> {
+  const stashList = await runGit(repoPath, ["stash", "list", "--format=%gd"], store, {
+    allowFailure: true,
+    record: false
+  });
+
+  if (stashList.exitCode !== 0) return 0;
+
+  return stashList.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean).length;
 }
 
 async function stashLocalChanges(
@@ -522,7 +755,9 @@ async function findStashRef(
   stashMessage: string,
   store?: AppStore
 ): Promise<string | null> {
-  const list = await runGit(repoPath, ["stash", "list", "--format=%gd%x09%s"], store);
+  const list = await runGit(repoPath, ["stash", "list", "--format=%gd%x09%s"], store, {
+    record: false
+  });
   const line = list.stdout
     .split(/\r?\n/)
     .map((item) => item.trim())
@@ -574,6 +809,47 @@ function isBaseBranch(branch: string): boolean {
   return branch === "main" || branch === "master";
 }
 
+function summarizeFileStatuses(files: GitFileStatus[]): GitStatusSummary {
+  const summary = files.reduce<GitStatusSummary>(
+    (totals, file) => {
+      const conflicted = isConflictStatus(file.indexStatus, file.worktreeStatus);
+      return {
+        staged: totals.staged + (isStagedStatus(file.indexStatus) ? 1 : 0),
+        unstaged: totals.unstaged + (isUnstagedStatus(file.worktreeStatus) ? 1 : 0),
+        untracked: totals.untracked + (file.indexStatus === "?" && file.worktreeStatus === "?" ? 1 : 0),
+        conflicted: totals.conflicted + (conflicted ? 1 : 0),
+        total: totals.total + 1,
+        clean: false
+      };
+    },
+    { staged: 0, unstaged: 0, untracked: 0, conflicted: 0, total: 0, clean: true }
+  );
+
+  return { ...summary, clean: summary.total === 0 };
+}
+
+function isStagedStatus(status: string): boolean {
+  return status !== " " && status !== "?" && status !== "U";
+}
+
+function isUnstagedStatus(status: string): boolean {
+  return status !== " " && status !== "?" && status !== "U";
+}
+
+function isConflictStatus(indexStatus: string, worktreeStatus: string): boolean {
+  return indexStatus === "U" || worktreeStatus === "U" || `${indexStatus}${worktreeStatus}` === "AA" || `${indexStatus}${worktreeStatus}` === "DD";
+}
+
+function fileStatusLabel(indexStatus: string, worktreeStatus: string): string {
+  if (indexStatus === "?" && worktreeStatus === "?") return "Por seguir";
+  if (isConflictStatus(indexStatus, worktreeStatus)) return "Conflito";
+  if (indexStatus === "R") return "Renomeado";
+  if (indexStatus === "A") return "Adicionado";
+  if (indexStatus === "D" || worktreeStatus === "D") return "Removido";
+  if (indexStatus === "M" || worktreeStatus === "M") return "Modificado";
+  return "Alterado";
+}
+
 async function pathExists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -590,7 +866,9 @@ async function findWorktreeByPath(
   store?: AppStore
 ): Promise<WorktreeRecord | null> {
   const requested = await comparablePath(requestedPath);
-  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store);
+  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store, {
+    record: false
+  });
   const worktrees = parseWorktreePorcelain(porcelain.stdout, currentPath);
 
   for (const worktree of worktrees) {
@@ -607,9 +885,11 @@ async function findReusableDetachedWorktreeForBranch(
   branch: string,
   store?: AppStore
 ): Promise<WorktreeRecord | null> {
-  const branchHead = (await runGit(repoPath, ["rev-parse", branch], store)).stdout.trim();
+  const branchHead = (await runGit(repoPath, ["rev-parse", branch], store, { record: false })).stdout.trim();
   const localPath = await comparablePath(repoPath);
-  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store);
+  const porcelain = await runGit(repoPath, ["worktree", "list", "--porcelain"], store, {
+    record: false
+  });
   const worktrees = parseWorktreePorcelain(porcelain.stdout, repoPath);
 
   for (const worktree of worktrees) {
@@ -651,4 +931,23 @@ function firstLine(value: string): string {
     .map((line) => line.trim())
     .find(Boolean)
     ?.slice(0, 240) ?? "";
+}
+
+function summarizeGitResult(result: GitResult): string {
+  const command = `git ${result.args.join(" ")}`;
+  if (result.timedOut) return `${command} excedeu ${result.timeoutMs}ms`;
+  if (result.exitCode === 0) return firstLine(result.stdout) || `${command} concluído`;
+  return firstLine(result.stderr) || `${command} falhou`;
+}
+
+function limitOperationLog(value: string): { value: string; truncated: boolean } {
+  const normalized = value.trimEnd();
+  if (normalized.length <= MAX_OPERATION_LOG_CHARS) {
+    return { value: normalized, truncated: false };
+  }
+
+  return {
+    value: `${normalized.slice(0, MAX_OPERATION_LOG_CHARS)}\n\n[log truncado]`,
+    truncated: true
+  };
 }
