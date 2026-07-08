@@ -43,6 +43,7 @@ type WorktreeCreateOptions = {
   newBranch: boolean;
   name?: string | null;
   path?: string | null;
+  basePath?: string | null;
 };
 
 type BranchSource =
@@ -199,8 +200,9 @@ export function parseWorktreePorcelain(stdout: string, currentPath: string): Wor
         const [key, ...rest] = line.split(" ");
         const value = rest.join(" ");
         if (key === "worktree") {
-          worktree.path = value;
-          worktree.id = encodePathId(value);
+          const normalizedPath = path.normalize(value);
+          worktree.path = normalizedPath;
+          worktree.id = encodePathId(normalizedPath);
         }
         if (key === "HEAD") worktree.head = value;
         if (key === "branch") worktree.branch = value.replace(/^refs\/heads\//, "");
@@ -380,16 +382,18 @@ export async function createWorktree(
     throw new Error("Campo obrigatório em falta: branch.");
   }
 
-  const targetPath = options.path
-    ? path.resolve(options.path)
-    : path.join(
-        path.dirname(repo.path),
-        options.name ? sanitizeFilePart(options.name) : defaultWorktreeName(repo.name, branch)
-      );
+  const targetPath = resolveWorktreeTargetPath(
+    repo,
+    branch,
+    options.name,
+    options.path,
+    options.basePath
+  );
 
   if (await pathExists(targetPath)) {
     throw new Error(`Já existe uma pasta com esse nome: ${targetPath}`);
   }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
 
   let args: string[];
   if (options.newBranch) {
@@ -509,7 +513,7 @@ export async function handoffWorktreeBranchToLocal(
 
 export async function moveLocalBranchToWorktree(
   repo: Pick<RepoRecord, "name" | "path">,
-  options: { name?: string | null; path?: string | null } = {},
+  options: { name?: string | null; path?: string | null; basePath?: string | null } = {},
   store?: AppStore,
   runtimeOptions: { safeMode?: boolean } = {}
 ): Promise<LocalBranchWorktreeResult> {
@@ -527,12 +531,13 @@ export async function moveLocalBranchToWorktree(
     throw new Error("Não encontrei uma branch local main ou master para deixar no workspace local.");
   }
 
-  const preferredWorktreePath = options.path
-    ? path.resolve(options.path)
-    : path.join(
-        path.dirname(repo.path),
-        options.name ? sanitizeFilePart(options.name) : defaultWorktreeName(repo.name, branch)
-      );
+  const preferredWorktreePath = resolveWorktreeTargetPath(
+    repo,
+    branch,
+    options.name,
+    options.path,
+    options.basePath
+  );
   const preferredPathExists = await pathExists(preferredWorktreePath);
   const preferredWorktree = preferredPathExists
     ? await findWorktreeByPath(repo.path, preferredWorktreePath, repo.path, store)
@@ -591,6 +596,7 @@ export async function moveLocalBranchToWorktree(
         : null;
       await runGit(finalWorktreePath, ["switch", branch], store);
     } else {
+      await fs.mkdir(path.dirname(finalWorktreePath), { recursive: true });
       await runGit(repo.path, ["worktree", "add", finalWorktreePath, branch], store);
     }
   } catch (error) {
@@ -619,6 +625,22 @@ export async function moveLocalBranchToWorktree(
     worktreePath: finalWorktreePath,
     movedChanges: Boolean(localStash)
   };
+}
+
+function resolveWorktreeTargetPath(
+  repo: Pick<RepoRecord, "name" | "path">,
+  branch: string,
+  name?: string | null,
+  requestedPath?: string | null,
+  basePath?: string | null
+): string {
+  if (requestedPath?.trim()) {
+    return path.resolve(requestedPath);
+  }
+
+  const directory = basePath?.trim() ? path.resolve(basePath) : path.dirname(repo.path);
+  const folderName = name ? sanitizeFilePart(name) : defaultWorktreeName(repo.name, branch);
+  return path.join(directory, folderName);
 }
 
 export async function getWorktrees(

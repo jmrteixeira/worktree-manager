@@ -51,6 +51,8 @@ Algumas acoes iniciadas pelo utilizador podem contactar sistemas fora da app:
 
 A app nao envia esses dados para um servico proprio.
 
+Em builds desktop empacotados, a UI fala diretamente com comandos Tauri/Rust. O backend HTTP local e usado para desenvolvimento web, nao como dependencia de producao desktop.
+
 ## Diagnosticos
 
 Diagnosticos sao gerados localmente. O botao para copiar JSON coloca os dados na area de transferencia; o utilizador decide se, quando e onde partilhar.

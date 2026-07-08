@@ -123,6 +123,7 @@ O workflow atual assina provenance e prepara a passagem de segredos Tauri. A ass
 
 ```bash
 npm run version:check
+npm run desktop:check-production
 npm test
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml

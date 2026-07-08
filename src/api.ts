@@ -9,6 +9,7 @@ import type {
   OpenTarget,
   AppSettings,
   OperationRecord,
+  PickFolderResponse,
   RepoRecord,
   RepoSummary,
   WorktreeHandoffResult,
@@ -18,6 +19,9 @@ import { isTauriRuntime, tauriApi } from "./tauriApi";
 import { visualApi } from "./visualApi";
 
 const API_BASE_URL = readApiBaseUrl();
+const DESKTOP_REQUIRES_TAURI = import.meta.env.VITE_DESKTOP_REQUIRE_TAURI === "true";
+const DESKTOP_RUNTIME_ERROR =
+  "Este build desktop foi gerado para correr dentro do Tauri. A API HTTP local está desativada em produção.";
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${url}`, {
@@ -47,6 +51,11 @@ const httpApi = {
   listFs(path?: string) {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FsListResponse>(`/api/fs${query}`);
+  },
+  pickFolder() {
+    return request<PickFolderResponse | null>("/api/fs/pick-folder", {
+      method: "POST"
+    });
   },
   listRepos() {
     return request<RepoRecord[]>("/api/repos");
@@ -163,7 +172,22 @@ const httpApi = {
   }
 };
 
-export const api = isVisualMode() ? visualApi : isTauriRuntime() ? tauriApi : httpApi;
+const unavailableDesktopApi = new Proxy(
+  {},
+  {
+    get() {
+      return () => Promise.reject(new Error(DESKTOP_RUNTIME_ERROR));
+    }
+  }
+) as typeof httpApi;
+
+export const api = isVisualMode()
+  ? visualApi
+  : isTauriRuntime()
+    ? tauriApi
+    : DESKTOP_REQUIRES_TAURI
+      ? unavailableDesktopApi
+      : httpApi;
 
 function withWorktreeQuery(url: string, worktreePath?: string) {
   if (!worktreePath) return url;

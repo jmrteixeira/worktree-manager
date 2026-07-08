@@ -16,6 +16,8 @@ const defaultState: AppState = {
   settings: {
     safeMode: true,
     locale: "pt",
+    branchPrefix: "",
+    worktreeDirectory: "",
     integrations: {
       editor: "auto",
       terminal: "auto"
@@ -163,6 +165,8 @@ function normalizeSettings(value: unknown): AppSettings {
   return {
     safeMode: typeof settings?.safeMode === "boolean" ? settings.safeMode : true,
     locale: isLocale(settings?.locale) ? settings.locale : "pt",
+    branchPrefix: normalizeTextSetting(settings?.branchPrefix),
+    worktreeDirectory: normalizeDirectorySetting(settings?.worktreeDirectory),
     integrations: {
       editor: isEditorIntegration(settings?.integrations?.editor)
         ? settings.integrations.editor
@@ -172,6 +176,15 @@ function normalizeSettings(value: unknown): AppSettings {
         : "auto"
     }
   };
+}
+
+function normalizeTextSetting(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeDirectorySetting(value: unknown): string {
+  const directory = normalizeTextSetting(value);
+  return directory ? path.resolve(directory) : "";
 }
 
 function isLocale(value: unknown): value is AppSettings["locale"] {

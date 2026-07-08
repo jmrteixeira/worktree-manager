@@ -15,6 +15,7 @@ Useful checks:
 npm test
 npm run build
 npm run version:check
+npm run desktop:check-production
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
@@ -35,6 +36,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Add or update tests where behavior changes.
 - Run `npm test` and `npm run build`.
 - Run `npm run version:check` when changing release metadata.
+- Run `npm run desktop:check-production` when touching Tauri, Vite env, or desktop packaging.
 - Run Cargo checks when touching `src-tauri/`.
 - Update docs when changing setup, packaging, security posture, or workflows.
 

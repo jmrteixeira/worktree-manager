@@ -1,4 +1,4 @@
-import { Component, ErrorInfo, Fragment, FormEvent, KeyboardEvent, ReactNode, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, ErrorInfo, Fragment, FormEvent, KeyboardEvent, ReactNode, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -23,6 +23,8 @@ import {
   Monitor,
   MoreVertical,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plug,
   Plus,
   RefreshCcw,
@@ -133,6 +135,10 @@ type ToastRecord = {
   tone: "success" | "error" | "info";
   title: string;
   detail?: string;
+};
+type I18nContextValue = {
+  locale: Locale;
+  t: (value: string) => string;
 };
 
 const ACTIVE_REPOS_STORAGE_KEY = "worktree-manager.activeRepoIds";
@@ -461,6 +467,8 @@ const A11Y_COPY = {
     progress: "Ação em curso",
     openNavigation: "Abrir navegação",
     closeNavigation: "Fechar navegação",
+    collapseSidebar: "Colapsar barra lateral",
+    expandSidebar: "Expandir barra lateral",
     openCommands: "Abrir comandos",
     dismissAlert: "Dispensar erro"
   },
@@ -468,10 +476,23 @@ const A11Y_COPY = {
     progress: "Action in progress",
     openNavigation: "Open navigation",
     closeNavigation: "Close navigation",
+    collapseSidebar: "Collapse sidebar",
+    expandSidebar: "Expand sidebar",
     openCommands: "Open commands",
     dismissAlert: "Dismiss error"
   }
-} satisfies Record<Locale, { progress: string; openNavigation: string; closeNavigation: string; openCommands: string; dismissAlert: string }>;
+} satisfies Record<
+  Locale,
+  {
+    progress: string;
+    openNavigation: string;
+    closeNavigation: string;
+    collapseSidebar: string;
+    expandSidebar: string;
+    openCommands: string;
+    dismissAlert: string;
+  }
+>;
 
 const SHELL_COPY = {
   pt: {
@@ -507,6 +528,319 @@ const SHELL_COPY = {
     commands: string;
   }
 >;
+
+const I18N_CONTEXT = createContext<I18nContextValue>({
+  locale: "pt",
+  t: (value) => value
+});
+
+const EN_TRANSLATIONS: Record<string, string> = {
+  "Arranque falhou": "Startup failed",
+  "A worktree em foco já não existe. Voltei ao workspace local.": "The focused worktree no longer exists. I switched back to the local workspace.",
+  "Atualização falhou": "Refresh failed",
+  "A worktree selecionada já não existe. Mostro o workspace local.": "The selected worktree no longer exists. Showing the local workspace.",
+  "Repositório adicionado": "Repository added",
+  "Não foi possível adicionar": "Could not add",
+  "Ação concluída": "Action completed",
+  "Ação falhou": "Action failed",
+  "Modo seguro atualizado": "Safe mode updated",
+  "Ativo": "On",
+  "Desligado": "Off",
+  "Configuração falhou": "Settings failed",
+  "Defaults atualizados": "Defaults updated",
+  "Defaults de trabalho": "Work defaults",
+  "Prefixo de branch": "Branch prefix",
+  "Local default das worktrees": "Default worktree location",
+  "Guardar defaults": "Save defaults",
+  "Usar pasta irmã do repositório": "Use repository sibling folder",
+  "Escolher local default das worktrees": "Choose default worktree location",
+  "Limpar": "Clear",
+  "Idioma atualizado": "Language updated",
+  "Integrações atualizadas": "Integrations refreshed",
+  "Deteção falhou": "Detection failed",
+  "Integração guardada": "Integration saved",
+  "Integração falhou": "Integration failed",
+  "Confirmar checkout de branch": "Confirm branch checkout",
+  "Esta operação muda a branch da worktree em foco. O Git pode bloquear se existirem alterações locais incompatíveis.": "This operation changes the branch in the focused worktree. Git can block it if incompatible local changes exist.",
+  "Confirmar checkout": "Confirm checkout",
+  "Repositório": "Repository",
+  "Abrir": "Open",
+  "Branch": "Branch",
+  "Branch destino": "Target branch",
+  "Confirmar pull": "Confirm pull",
+  "Esta operação executa git pull --ff-only e pode atualizar ficheiros no workspace selecionado.": "This operation runs git pull --ff-only and can update files in the selected workspace.",
+  "Executar pull": "Run pull",
+  "Comando": "Command",
+  "Confirmar handoff para local": "Confirm handoff to local",
+  "A branch desta worktree vai passar para o workspace local e a worktree de origem ficará detached.": "This worktree branch will move to the local workspace and the source worktree will become detached.",
+  "Confirmar checkout local": "Confirm local checkout",
+  "Origem": "Source",
+  "Destino local": "Local destination",
+  "Guardar alterações não commitadas numa stash temporária.": "Stash uncommitted changes temporarily.",
+  "Fazer detach da branch na worktree de origem.": "Detach the branch from the source worktree.",
+  "Fazer checkout da branch no workspace local.": "Check out the branch in the local workspace.",
+  "Reaplicar as alterações não commitadas no workspace local.": "Reapply uncommitted changes in the local workspace.",
+  "A worktree de origem deixa de ter a branch checked out.": "The source worktree will no longer have the branch checked out.",
+  "branch atual": "current branch",
+  "Confirmar mover para worktree": "Confirm move to worktree",
+  "A branch local atual vai passar para uma worktree, deixando o workspace local em main ou master.": "The current local branch will move to a worktree, leaving the local workspace on main or master.",
+  "Confirmar mover": "Confirm move",
+  "Workspace local": "Local workspace",
+  "Destino": "Destination",
+  "Worktree existente compatível ou nova pasta padrão": "Compatible existing worktree or new default folder",
+  "Reutilizar uma worktree detached existente, quando existir.": "Reuse an existing detached worktree when available.",
+  "Guardar alterações não commitadas locais numa stash temporária.": "Stash local uncommitted changes temporarily.",
+  "Fazer checkout de main ou master no workspace local.": "Check out main or master in the local workspace.",
+  "Guardar alterações existentes na worktree de destino.": "Stash existing changes in the destination worktree.",
+  "Fazer checkout da branch na worktree.": "Check out the branch in the worktree.",
+  "Reaplicar as alterações não commitadas na worktree.": "Reapply uncommitted changes in the worktree.",
+  "Handoff concluído": "Handoff completed",
+  "Handoff falhou": "Handoff failed",
+  "Remover worktree": "Remove worktree",
+  "Apagar branch": "Delete branch",
+  "Mover para worktree": "Move to worktree",
+  "Branch movida para worktree": "Branch moved to worktree",
+  "Detalhe falhou": "Detail failed",
+  "Operações atualizadas": "Operations refreshed",
+  "Diagnóstico atualizado": "Diagnostics refreshed",
+  "Diagnóstico falhou": "Diagnostics failed",
+  "Diagnóstico copiado": "Diagnostics copied",
+  "Cópia falhou": "Copy failed",
+  "Relatório copiado": "Report copied",
+  "Não existe uma worktree elegível para handoff.": "No eligible worktree exists for handoff.",
+  "Começar trabalho paralelo": "Start parallel work",
+  "Criar uma worktree para uma branch existente ou nova.": "Create a worktree for an existing or new branch.",
+  "Sem repositório": "No repository",
+  "Pronto": "Ready",
+  "Escolher branch existente ou criar uma nova branch.": "Choose an existing branch or create a new one.",
+  "Confirmar nome ou caminho da pasta da worktree.": "Confirm the worktree folder name or path.",
+  "Criar a worktree e passar o foco para ela.": "Create the worktree and move focus to it.",
+  "Seleciona um repositório para começar.": "Select a repository to get started.",
+  "Criar worktree": "Create worktree",
+  "Handoff de worktree para local": "Handoff from worktree to local",
+  "Trazer a branch de uma worktree para o workspace local.": "Bring a worktree branch into the local workspace.",
+  "Sem worktree elegível": "No eligible worktree",
+  "Guardar alterações não commitadas na worktree de origem.": "Stash uncommitted changes in the source worktree.",
+  "Reaplicar alterações não commitadas no workspace local.": "Reapply uncommitted changes in the local workspace.",
+  "Existe pelo menos uma worktree com branch associada.": "At least one worktree has an associated branch.",
+  "Não existe worktree com branch pronta para handoff.": "No worktree has a branch ready for handoff.",
+  "Preparar handoff": "Prepare handoff",
+  "Handoff de local para worktree": "Handoff from local to worktree",
+  "Mover a branch local para uma worktree e libertar o workspace local.": "Move the local branch to a worktree and free the local workspace.",
+  "Reutilizar uma worktree detached existente quando possível.": "Reuse an existing detached worktree when possible.",
+  "Guardar alterações não commitadas locais.": "Stash local uncommitted changes.",
+  "Reaplicar alterações não commitadas na worktree.": "Reapply uncommitted changes in the worktree.",
+  "Preparar mover": "Prepare move",
+  "Sincronizar worktree em foco": "Sync focused worktree",
+  "Executar fetch ou pull na worktree selecionada.": "Run fetch or pull in the selected worktree.",
+  "Sincronização": "Sync",
+  "Confirmar a worktree em foco.": "Confirm the focused worktree.",
+  "Executar fetch para atualizar referências remotas.": "Run fetch to update remote refs.",
+  "Executar pull --ff-only quando for seguro avançar.": "Run pull --ff-only when it is safe to proceed.",
+  "Modo seguro ativo.": "Safe mode on.",
+  "Modo seguro desligado.": "Safe mode off.",
+  "Preparar pull": "Prepare pull",
+  "Executar fetch": "Run fetch",
+  "Rever alterações locais": "Review local changes",
+  "Abrir o detalhe da worktree em foco para ver ficheiros alterados.": "Open the focused worktree detail to review changed files.",
+  "Revisão": "Review",
+  "Abrir a vista de detalhe da worktree em foco.": "Open the focused worktree detail view.",
+  "Rever ficheiros staged, unstaged e por seguir.": "Review staged, unstaged and untracked files.",
+  "Decidir entre commit, stash, handoff ou limpeza manual.": "Decide between commit, stash, handoff or manual cleanup.",
+  "Abrir detalhe": "Open detail",
+  "Navegação": "Navigation",
+  "Repositório em foco": "Focused repository",
+  "Válido": "Valid",
+  "Sem alterações": "No changes",
+  "Métricas": "Metrics",
+  "Todas limpas": "All clean",
+  "Atual": "Current",
+  "Branch atual": "Current branch",
+  "Alterações": "Changes",
+  "Sem stash": "No stash",
+  "Commits": "Commits",
+  "Workflows guiados": "Guided workflows",
+  "Fluxos orientados para operações frequentes e sensíveis": "Guided flows for frequent and sensitive operations",
+  "Atualizar": "Refresh",
+  "Nova Worktree": "New Worktree",
+  "Gerir worktrees do repositório": "Manage repository worktrees",
+  "Gerir branches do repositório": "Manage repository branches",
+  "Nova Branch": "New Branch",
+  "Operações recentes": "Recent operations",
+  "Histórico local dos comandos Git": "Local history of Git commands",
+  "Integrações": "Integrations",
+  "Ferramentas externas para abrir worktrees": "External tools for opening worktrees",
+  "Detetar": "Detect",
+  "Testar editor": "Test editor",
+  "Testar terminal": "Test terminal",
+  "Erro de interface": "Interface error",
+  "A aplicação encontrou um erro inesperado.": "The application encountered an unexpected error.",
+  "Tentar novamente": "Try again",
+  "Recarregar": "Reload",
+  "Abrir workflow": "Open workflow",
+  "Worktree de origem": "Source worktree",
+  "Passos": "Steps",
+  "Pré-condições": "Preconditions",
+  "Cancelar": "Cancel",
+  "Limpa": "Clean",
+  "Sem upstream": "No upstream",
+  "Área de trabalho": "Workspace",
+  "Gerir vários repositórios em paralelo e escolher o foco das operações.": "Manage multiple repositories in parallel and choose the operation focus.",
+  "Atualizar todos": "Refresh all",
+  "Adicionar": "Add",
+  "Repos ativos": "Active repos",
+  "Limpo": "Clean",
+  "Erro": "Error",
+  "A carregar": "Loading",
+  "Remover da área de trabalho": "Remove from workspace",
+  "Detalhe indisponível": "Detail unavailable",
+  "A carregar detalhe": "Loading detail",
+  "A recolher estado Git da worktree selecionada.": "Collecting Git status from the selected worktree.",
+  "Detalhe da worktree": "Worktree detail",
+  "Pasta": "Folder",
+  "Editor": "Editor",
+  "Terminal": "Terminal",
+  "Copiar": "Copy",
+  "Checkout local": "Local checkout",
+  "Estado Git": "Git status",
+  "HEAD destacado": "Detached HEAD",
+  "Branch associada": "Associated branch",
+  "Ramo remoto": "Remote branch",
+  "Ahead / behind": "Ahead / behind",
+  "Último fetch": "Last fetch",
+  "Estado local": "Local status",
+  "Alterações nesta worktree": "Changes in this worktree",
+  "Conflitos": "Conflicts",
+  "Worktrees deste repositório": "Repository worktrees",
+  "Selecionada": "Selected",
+  "Local": "Local",
+  "Sem alterações locais.": "No local changes.",
+  "Ficheiro": "File",
+  "Estado": "Status",
+  "Sem repositório em foco": "No focused repository",
+  "A carregar os dados do repositório selecionado.": "Loading selected repository data.",
+  "Filtros": "Filters",
+  "Pesquisar worktrees": "Search worktrees",
+  "Todas": "All",
+  "Em foco": "Focused",
+  "Com alterações": "Changed",
+  "Limpas": "Clean",
+  "Detached": "Detached",
+  "Caminho": "Path",
+  "Último Commit": "Last Commit",
+  "Data": "Date",
+  "Ações": "Actions",
+  "Abrir pasta": "Open folder",
+  "Abrir no editor": "Open in editor",
+  "Abrir no terminal": "Open in terminal",
+  "Copiar caminho": "Copy path",
+  "Remover": "Remove",
+  "Sem worktrees para os filtros atuais": "No worktrees for the current filters",
+  "Ainda não existem worktrees": "No worktrees yet",
+  "Ajusta a pesquisa ou limpa os filtros para voltar à lista completa.": "Adjust the search or clear filters to return to the full list.",
+  "Cria uma worktree para trabalhar numa branch em paralelo sem mexer no workspace local.": "Create a worktree to work on a branch in parallel without touching the local workspace.",
+  "Limpar filtros": "Clear filters",
+  "Pesquisar branches": "Search branches",
+  "Locais": "Local",
+  "Remotas": "Remote",
+  "Remota": "Remote",
+  "Nome": "Name",
+  "Checkout nesta worktree": "Checkout in this worktree",
+  "Apagar": "Delete",
+  "Sem branches para os filtros atuais": "No branches for the current filters",
+  "Ainda não existem branches locais": "No local branches yet",
+  "A pesquisa ou filtro atual não encontrou branches.": "The current search or filter did not find branches.",
+  "Cria uma branch local para iniciar trabalho isolado ou preparar uma nova worktree.": "Create a local branch to start isolated work or prepare a new worktree.",
+  "Ainda não há operações registadas": "No operations recorded yet",
+  "Executa uma ação Git ou atualiza o dashboard para popular o histórico local.": "Run a Git action or refresh the dashboard to populate local history.",
+  "Pesquisar operações": "Search operations",
+  "Resumo": "Summary",
+  "Duração": "Duration",
+  "Logs": "Logs",
+  "Ocultar": "Hide",
+  "Ver": "View",
+  "Ocultar logs": "Hide logs",
+  "Ver logs": "View logs",
+  "Sem operações para os filtros atuais": "No operations for the current filters",
+  "Ajusta a pesquisa ou limpa os filtros para consultar o histórico completo.": "Adjust the search or clear filters to browse the full history.",
+  "Diretório": "Directory",
+  "Sinal": "Signal",
+  "Truncado": "Truncated",
+  "Sem output.": "No output.",
+  "Modificado": "Modified",
+  "Por seguir": "Untracked",
+  "Conflito": "Conflict",
+  "Renomeado": "Renamed",
+  "Adicionado": "Added",
+  "Apagado": "Deleted",
+  "Abrir menu de ações": "Open actions menu",
+  "Escuro": "Dark",
+  "Claro": "Light",
+  "Sistema": "System",
+  "Mudar tema": "Change theme",
+  "Tema atual": "Current theme",
+  "Mudar para": "Change to",
+  "Tema": "Theme",
+  "Escolher tema": "Choose theme",
+  "Modo seguro": "Safe mode",
+  "Escolher modo seguro": "Choose safe mode",
+  "Observabilidade": "Observability",
+  "Diagnóstico local": "Local diagnostics",
+  "Copiar JSON": "Copy JSON",
+  "Copiado": "Copied",
+  "Repositórios": "Repositories",
+  "falhas": "failures",
+  "média": "avg",
+  "pior": "worst",
+  "Última falha": "Last failure",
+  "Sem falhas recentes": "No recent failures",
+  "Gerado": "Generated",
+  "Sem diagnóstico disponível.": "No diagnostics available.",
+  "Integração": "Integration",
+  "Selecionado": "Selected",
+  "A carregar integrações.": "Loading integrations.",
+  "Pesquisar comandos": "Search commands",
+  "Pesquisar comandos, repositórios, worktrees ou branches": "Search commands, repositories, worktrees or branches",
+  "Fechar comandos": "Close commands",
+  "Paleta de comandos": "Command palette",
+  "Comandos": "Commands",
+  "Nenhum comando encontrado.": "No command found.",
+  "Selecionar Repositório": "Select Repository",
+  "Escolher pasta": "Choose folder",
+  "Escolher outra pasta": "Choose another folder",
+  "Pasta selecionada": "Selected folder",
+  "A pasta escolhida não é um repositório Git. Escolhe uma pasta com .git ou abre uma subpasta listada.": "The selected folder is not a Git repository. Choose a folder with .git or open one of the listed subfolders.",
+  "Ir": "Go",
+  "Selecionar pasta atual": "Select current folder",
+  "Recentes": "Recent",
+  "Nenhum repositório recente.": "No recent repository.",
+  "Selecionar": "Select",
+  "Tipo": "Type",
+  "Branch existente": "Existing branch",
+  "Nova branch": "New branch",
+  "Nome da pasta": "Folder name",
+  "opcional": "optional",
+  "Local completo": "Full path",
+  "Criar": "Create",
+  "A partir de": "From",
+  "HEAD atual": "Current HEAD",
+  "Passos previstos": "Planned steps",
+  "Escreve": "Type",
+  "Área de transferência indisponível.": "Clipboard unavailable.",
+  "Erro inesperado.": "Unexpected error.",
+  "Não foi possível copiar o caminho.": "Could not copy the path.",
+  "Sem dados": "No data",
+  "Divergente": "Diverged",
+  "Sincronizado": "Synced"
+};
+
+function useI18n() {
+  return useContext(I18N_CONTEXT);
+}
+
+function translate(locale: Locale, value: string) {
+  return locale === "en" ? EN_TRANSLATIONS[value] ?? value : value;
+}
 
 class AppErrorBoundary extends Component<
   { children: ReactNode },
@@ -568,10 +902,13 @@ function WorktreeManagerApp() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [settings, setSettings] = useState<AppSettings>({
     safeMode: true,
     locale: "pt",
+    branchPrefix: "",
+    worktreeDirectory: "",
     integrations: {
       editor: "auto",
       terminal: "auto"
@@ -606,6 +943,8 @@ function WorktreeManagerApp() {
   const settingsCopy = SETTINGS_COPY[locale] ?? SETTINGS_COPY.pt;
   const a11yCopy = A11Y_COPY[locale] ?? A11Y_COPY.pt;
   const shellCopy = SHELL_COPY[locale] ?? SHELL_COPY.pt;
+  const t = useMemo(() => (value: string) => translate(locale, value), [locale]);
+  const i18n = useMemo(() => ({ locale, t }), [locale, t]);
   const selectedFocusedWorktreePath =
     (selectedRepoId ? focusedWorktreePaths[selectedRepoId] : null) ??
     selectedSummary?.focusedWorktreePath ??
@@ -645,6 +984,10 @@ function WorktreeManagerApp() {
   useEffect(() => {
     void loadInitialState();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.lang = locale === "en" ? "en" : "pt-PT";
+  }, [locale]);
 
   useEffect(() => {
     function handleHashChange() {
@@ -744,7 +1087,7 @@ function WorktreeManagerApp() {
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Arranque falhou", detail: message });
+      notify({ tone: "error", title: t("Arranque falhou"), detail: message });
     } finally {
       setLoading(false);
     }
@@ -816,7 +1159,7 @@ function WorktreeManagerApp() {
       if (focusWasReset) {
         skipNextWorkspaceRefresh.current = true;
         setFocusedWorktreePaths(effectiveFocusMap);
-        setError("A worktree em foco já não existe. Voltei ao workspace local.");
+        setError(t("A worktree em foco já não existe. Voltei ao workspace local."));
       }
 
       setRepoSummaries(
@@ -839,7 +1182,7 @@ function WorktreeManagerApp() {
       if (requestId !== refreshRequestId.current) return;
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Atualização falhou", detail: message });
+      notify({ tone: "error", title: t("Atualização falhou"), detail: message });
     } finally {
       if (requestId === refreshRequestId.current) {
         setLoading(false);
@@ -860,7 +1203,7 @@ function WorktreeManagerApp() {
         setDetailWorktreePath(null);
         const fallbackDetail = await api.detail(repoId);
         setDetail(fallbackDetail);
-        setDetailError("A worktree selecionada já não existe. Mostro o workspace local.");
+        setDetailError(t("A worktree selecionada já não existe. Mostro o workspace local."));
         return;
       }
 
@@ -883,11 +1226,11 @@ function WorktreeManagerApp() {
       setSelectedRepoId(repo.id);
       setDialog(null);
       setDiagnostics(await api.diagnostics());
-      notify({ tone: "success", title: "Repositório adicionado", detail: repo.name });
+      notify({ tone: "success", title: t("Repositório adicionado"), detail: repo.name });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Não foi possível adicionar", detail: message });
+      notify({ tone: "error", title: t("Não foi possível adicionar"), detail: message });
       await recordUiError("select_repository_failed", message, { path });
     } finally {
       setActionLoading(null);
@@ -901,11 +1244,11 @@ function WorktreeManagerApp() {
     try {
       await action();
       await refreshDashboard(selectedRepoId, workspaceRepoIds, focusedWorktreePaths);
-      notify({ tone: "success", title: "Ação concluída", detail: label });
+      notify({ tone: "success", title: t("Ação concluída"), detail: label });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Ação falhou", detail: message });
+      notify({ tone: "error", title: t("Ação falhou"), detail: message });
       await recordUiError("action_failed", message, { label });
     } finally {
       setActionLoading(null);
@@ -917,11 +1260,11 @@ function WorktreeManagerApp() {
     setError(null);
     try {
       await action();
-      notify({ tone: "success", title: "Ação concluída", detail: label });
+      notify({ tone: "success", title: t("Ação concluída"), detail: label });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Ação falhou", detail: message });
+      notify({ tone: "error", title: t("Ação falhou"), detail: message });
       await recordUiError("external_action_failed", message, { label });
     } finally {
       setActionLoading(null);
@@ -929,7 +1272,7 @@ function WorktreeManagerApp() {
   }
 
   function openExternalPath(path: string, target: OpenTarget) {
-    void runExternalAction(openTargetActionLabel(target), () => api.openPath(path, target));
+    void runExternalAction(openTargetActionLabel(target, locale), () => api.openPath(path, target));
   }
 
   function requestSensitiveAction(action: Omit<SensitiveActionDialogState, "kind">) {
@@ -943,12 +1286,50 @@ function WorktreeManagerApp() {
       const nextSettings = await api.updateSettings({ safeMode });
       setSettings(nextSettings);
       setDiagnostics(await api.diagnostics());
-      notify({ tone: "success", title: "Modo seguro atualizado", detail: safeMode ? "Ativo" : "Desligado" });
+      notify({ tone: "success", title: t("Modo seguro atualizado"), detail: safeMode ? t("Ativo") : t("Desligado") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Configuração falhou", detail: message });
+      notify({ tone: "error", title: t("Configuração falhou"), detail: message });
       await recordUiError("update_settings_failed", message, { safeMode });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function updateWorkDefaults(defaults: Pick<AppSettings, "branchPrefix" | "worktreeDirectory">) {
+    setActionLoading("settings");
+    setError(null);
+    try {
+      const nextSettings = await api.updateSettings({
+        branchPrefix: defaults.branchPrefix,
+        worktreeDirectory: defaults.worktreeDirectory
+      });
+      setSettings(nextSettings);
+      setDiagnostics(await api.diagnostics());
+      notify({ tone: "success", title: t("Defaults atualizados") });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: t("Configuração falhou"), detail: message });
+      await recordUiError("update_work_defaults_failed", message, defaults);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function pickDefaultWorktreeDirectory(): Promise<string | null> {
+    setActionLoading("settings-folder");
+    setError(null);
+    try {
+      const selected = await api.pickFolder();
+      return selected?.path ?? null;
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: t("Configuração falhou"), detail: message });
+      await recordUiError("pick_default_worktree_directory_failed", message);
+      return null;
     } finally {
       setActionLoading(null);
     }
@@ -963,12 +1344,12 @@ function WorktreeManagerApp() {
       setDiagnostics(await api.diagnostics());
       notify({
         tone: "success",
-        title: nextLocale === "pt" ? "Idioma atualizado" : "Language updated"
+        title: translate(nextLocale, "Idioma atualizado")
       });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Configuração falhou", detail: message });
+      notify({ tone: "error", title: t("Configuração falhou"), detail: message });
       await recordUiError("update_locale_failed", message, { locale: nextLocale });
     } finally {
       setActionLoading(null);
@@ -980,11 +1361,11 @@ function WorktreeManagerApp() {
     setError(null);
     try {
       setIntegrationCatalog(await api.integrations());
-      notify({ tone: "success", title: "Integrações atualizadas" });
+      notify({ tone: "success", title: t("Integrações atualizadas") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Deteção falhou", detail: message });
+      notify({ tone: "error", title: t("Deteção falhou"), detail: message });
       await recordUiError("refresh_integrations_failed", message);
     } finally {
       setActionLoading(null);
@@ -999,11 +1380,11 @@ function WorktreeManagerApp() {
       const nextCatalog = await api.integrations();
       setSettings(nextSettings);
       setIntegrationCatalog(nextCatalog);
-      notify({ tone: "success", title: "Integração guardada" });
+      notify({ tone: "success", title: t("Integração guardada") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Integração falhou", detail: message });
+      notify({ tone: "error", title: t("Integração falhou"), detail: message });
       await recordUiError("update_integrations_failed", message, nextIntegrations);
     } finally {
       setActionLoading(null);
@@ -1018,13 +1399,13 @@ function WorktreeManagerApp() {
     const branchName = branch.name;
 
     requestSensitiveAction({
-      title: "Confirmar checkout de branch",
-      description: "Esta operação muda a branch da worktree em foco. O Git pode bloquear se existirem alterações locais incompatíveis.",
-      confirmLabel: "Confirmar checkout",
+      title: t("Confirmar checkout de branch"),
+      description: t("Esta operação muda a branch da worktree em foco. O Git pode bloquear se existirem alterações locais incompatíveis."),
+      confirmLabel: t("Confirmar checkout"),
       details: [
-        { label: "Repositório", value: selectedRepo.name },
+        { label: t("Repositório"), value: selectedRepo.name },
         { label: "Worktree", value: worktreePath },
-        { label: "Branch destino", value: branchName }
+        { label: t("Branch destino"), value: branchName }
       ],
       warnings: sensitiveWarningsForPath(worktreePath),
       onConfirm: () =>
@@ -1041,13 +1422,13 @@ function WorktreeManagerApp() {
     const targetPath = worktreePath ?? selectedFocusedWorktreePath ?? selectedRepo.path;
 
     requestSensitiveAction({
-      title: "Confirmar pull",
-      description: "Esta operação executa git pull --ff-only e pode atualizar ficheiros no workspace selecionado.",
-      confirmLabel: "Executar pull",
+      title: t("Confirmar pull"),
+      description: t("Esta operação executa git pull --ff-only e pode atualizar ficheiros no workspace selecionado."),
+      confirmLabel: t("Executar pull"),
       details: [
-        { label: "Repositório", value: selectedRepo.name },
+        { label: t("Repositório"), value: selectedRepo.name },
         { label: "Worktree", value: targetPath },
-        { label: "Comando", value: "git pull --ff-only" }
+        { label: t("Comando"), value: "git pull --ff-only" }
       ],
       warnings: sensitiveWarningsForPath(targetPath),
       onConfirm: () =>
@@ -1061,23 +1442,23 @@ function WorktreeManagerApp() {
     if (!selectedRepo) return;
 
     requestSensitiveAction({
-      title: "Confirmar handoff para local",
-      description: "A branch desta worktree vai passar para o workspace local e a worktree de origem ficará detached.",
-      confirmLabel: "Confirmar checkout local",
+      title: t("Confirmar handoff para local"),
+      description: t("A branch desta worktree vai passar para o workspace local e a worktree de origem ficará detached."),
+      confirmLabel: t("Confirmar checkout local"),
       details: [
-        { label: "Repositório", value: selectedRepo.name },
+        { label: t("Repositório"), value: selectedRepo.name },
         { label: "Branch", value: worktree.branch ?? "detached" },
-        { label: "Origem", value: worktree.path },
-        { label: "Destino local", value: selectedRepo.path }
+        { label: t("Origem"), value: worktree.path },
+        { label: t("Destino local"), value: selectedRepo.path }
       ],
       steps: [
-        "Guardar alterações não commitadas numa stash temporária.",
-        "Fazer detach da branch na worktree de origem.",
-        "Fazer checkout da branch no workspace local.",
-        "Reaplicar as alterações não commitadas no workspace local."
+        t("Guardar alterações não commitadas numa stash temporária."),
+        t("Fazer detach da branch na worktree de origem."),
+        t("Fazer checkout da branch no workspace local."),
+        t("Reaplicar as alterações não commitadas no workspace local.")
       ],
       warnings: [
-        "A worktree de origem deixa de ter a branch checked out.",
+        t("A worktree de origem deixa de ter a branch checked out."),
         ...sensitiveWarningsForPath(worktree.path)
       ],
       onConfirm: () => handoffWorktreeToLocal(worktree)
@@ -1088,25 +1469,25 @@ function WorktreeManagerApp() {
     if (!selectedRepo) return;
 
     const localWorktree = findKnownWorktree(selectedRepo.path);
-    const branch = localWorktree?.branch ?? selectedSummary?.currentBranch ?? "branch atual";
+    const branch = localWorktree?.branch ?? selectedSummary?.currentBranch ?? t("branch atual");
 
     requestSensitiveAction({
-      title: "Confirmar mover para worktree",
-      description: "A branch local atual vai passar para uma worktree, deixando o workspace local em main ou master.",
-      confirmLabel: "Confirmar mover",
+      title: t("Confirmar mover para worktree"),
+      description: t("A branch local atual vai passar para uma worktree, deixando o workspace local em main ou master."),
+      confirmLabel: t("Confirmar mover"),
       details: [
-        { label: "Repositório", value: selectedRepo.name },
+        { label: t("Repositório"), value: selectedRepo.name },
         { label: "Branch", value: branch },
-        { label: "Workspace local", value: selectedRepo.path },
-        { label: "Destino", value: "Worktree existente compatível ou nova pasta padrão" }
+        { label: t("Workspace local"), value: selectedRepo.path },
+        { label: t("Destino"), value: t("Worktree existente compatível ou nova pasta padrão") }
       ],
       steps: [
-        "Reutilizar uma worktree detached existente, quando existir.",
-        "Guardar alterações não commitadas locais numa stash temporária.",
-        "Fazer checkout de main ou master no workspace local.",
-        "Guardar alterações existentes na worktree de destino.",
-        "Fazer checkout da branch na worktree.",
-        "Reaplicar as alterações não commitadas na worktree."
+        t("Reutilizar uma worktree detached existente, quando existir."),
+        t("Guardar alterações não commitadas locais numa stash temporária."),
+        t("Fazer checkout de main ou master no workspace local."),
+        t("Guardar alterações existentes na worktree de destino."),
+        t("Fazer checkout da branch na worktree."),
+        t("Reaplicar as alterações não commitadas na worktree.")
       ],
       warnings: sensitiveWarningsForPath(selectedRepo.path),
       onConfirm: () => moveLocalBranchToWorktree()
@@ -1131,15 +1512,27 @@ function WorktreeManagerApp() {
 
     if (!status || status.clean) return [];
 
-    const warnings = [`Esta worktree tem ${formatChangeCount(status.total)} não commitadas.`];
+    const warnings = [
+      locale === "en"
+        ? `This worktree has ${formatChangeCount(status.total, locale)} uncommitted.`
+        : `Esta worktree tem ${formatChangeCount(status.total, locale)} não commitadas.`
+    ];
     if (status.conflicted) {
-      warnings.push(`${status.conflicted === 1 ? "Existe" : "Existem"} ${formatConflictCount(status.conflicted)} nesta worktree.`);
+      warnings.push(
+        locale === "en"
+          ? `There ${status.conflicted === 1 ? "is" : "are"} ${formatConflictCount(status.conflicted, locale)} in this worktree.`
+          : `${status.conflicted === 1 ? "Existe" : "Existem"} ${formatConflictCount(status.conflicted, locale)} nesta worktree.`
+      );
     }
     if (status.untracked) {
       warnings.push(
-        `${status.untracked === 1 ? "Existe" : "Existem"} ${status.untracked} ${
-          status.untracked === 1 ? "ficheiro novo" : "ficheiros novos"
-        } por seguir.`
+        locale === "en"
+          ? `There ${status.untracked === 1 ? "is" : "are"} ${status.untracked} ${
+              status.untracked === 1 ? "new untracked file" : "new untracked files"
+            }.`
+          : `${status.untracked === 1 ? "Existe" : "Existem"} ${status.untracked} ${
+              status.untracked === 1 ? "ficheiro novo" : "ficheiros novos"
+            } por seguir.`
       );
     }
     return warnings;
@@ -1184,11 +1577,11 @@ function WorktreeManagerApp() {
       const nextFocusMap = { ...focusedWorktreePaths, [repoId]: result.localPath };
       setFocusedWorktreePaths(nextFocusMap);
       await refreshDashboard(repoId, repoIds, nextFocusMap);
-      notify({ tone: "success", title: "Handoff concluído", detail: result.branch });
+      notify({ tone: "success", title: t("Handoff concluído"), detail: result.branch });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Handoff falhou", detail: message });
+      notify({ tone: "error", title: t("Handoff falhou"), detail: message });
       await recordUiError("handoff_worktree_to_local_failed", message, { repoId, worktree: worktree.path });
     } finally {
       setActionLoading(null);
@@ -1200,18 +1593,18 @@ function WorktreeManagerApp() {
 
     const repoId = selectedRepoId;
     const repoIds = workspaceRepoIds;
-    setActionLoading("Mover para worktree");
+    setActionLoading(t("Mover para worktree"));
     setError(null);
     try {
       const result = await api.moveLocalBranchToWorktree(repoId);
       const nextFocusMap = { ...focusedWorktreePaths, [repoId]: result.localPath };
       setFocusedWorktreePaths(nextFocusMap);
       await refreshDashboard(repoId, repoIds, nextFocusMap);
-      notify({ tone: "success", title: "Branch movida para worktree", detail: result.branch });
+      notify({ tone: "success", title: t("Branch movida para worktree"), detail: result.branch });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Handoff falhou", detail: message });
+      notify({ tone: "error", title: t("Handoff falhou"), detail: message });
       await recordUiError("move_local_branch_to_worktree_failed", message, { repoId });
     } finally {
       setActionLoading(null);
@@ -1236,7 +1629,7 @@ function WorktreeManagerApp() {
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Detalhe falhou", detail: message });
+      notify({ tone: "error", title: t("Detalhe falhou"), detail: message });
       await recordUiError("detail_action_failed", message, {
         label,
         repoId,
@@ -1257,11 +1650,11 @@ function WorktreeManagerApp() {
       ]);
       setOperations(nextOperations);
       setDiagnostics(diagnosticsSnapshot);
-      notify({ tone: "success", title: "Operações atualizadas" });
+      notify({ tone: "success", title: t("Operações atualizadas") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Atualização falhou", detail: message });
+      notify({ tone: "error", title: t("Atualização falhou"), detail: message });
       await recordUiError("refresh_operations_failed", message);
     } finally {
       setLoading(false);
@@ -1273,11 +1666,11 @@ function WorktreeManagerApp() {
     setError(null);
     try {
       setDiagnostics(await api.diagnostics());
-      notify({ tone: "success", title: "Diagnóstico atualizado" });
+      notify({ tone: "success", title: t("Diagnóstico atualizado") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Diagnóstico falhou", detail: message });
+      notify({ tone: "error", title: t("Diagnóstico falhou"), detail: message });
       await recordUiError("refresh_diagnostics_failed", message);
     } finally {
       setActionLoading(null);
@@ -1290,14 +1683,14 @@ function WorktreeManagerApp() {
     try {
       const snapshot = await api.diagnostics();
       setDiagnostics(snapshot);
-      await writeClipboard(JSON.stringify(snapshot, null, 2));
+      await writeClipboard(JSON.stringify(snapshot, null, 2), locale);
       setDiagnosticsCopied(true);
       window.setTimeout(() => setDiagnosticsCopied(false), 1800);
-      notify({ tone: "success", title: "Diagnóstico copiado" });
+      notify({ tone: "success", title: t("Diagnóstico copiado") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: "Cópia falhou", detail: message });
+      notify({ tone: "error", title: t("Cópia falhou"), detail: message });
       await recordUiError("copy_diagnostics_failed", message);
     } finally {
       setActionLoading(null);
@@ -1318,14 +1711,14 @@ function WorktreeManagerApp() {
         focusedWorktreePaths,
         onboardingDismissed
       });
-      await writeClipboard(JSON.stringify(report, null, 2));
+      await writeClipboard(JSON.stringify(report, null, 2), locale);
       setPrivacyReportCopied(true);
       window.setTimeout(() => setPrivacyReportCopied(false), 1800);
-      notify({ tone: "success", title: locale === "pt" ? "Relatório copiado" : "Report copied" });
+      notify({ tone: "success", title: t("Relatório copiado") });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
-      notify({ tone: "error", title: locale === "pt" ? "Cópia falhou" : "Copy failed", detail: message });
+      notify({ tone: "error", title: t("Cópia falhou"), detail: message });
       await recordUiError("copy_privacy_report_failed", message);
     } finally {
       setActionLoading(null);
@@ -1415,7 +1808,7 @@ function WorktreeManagerApp() {
         worktrees.find((item) => item.id === options.worktreeId) ??
         worktrees.find((item) => !sameWorktreePath(item.path, selectedRepo.path) && Boolean(item.branch));
       if (!worktree) {
-        setError("Não existe uma worktree elegível para handoff.");
+        setError(t("Não existe uma worktree elegível para handoff."));
         return;
       }
       confirmHandoffWorktreeToLocal(worktree);
@@ -1458,127 +1851,134 @@ function WorktreeManagerApp() {
       ? worktrees.filter((worktree) => !sameWorktreePath(worktree.path, selectedRepo.path) && Boolean(worktree.branch))
       : [];
     const localWorktree = selectedRepo ? findKnownWorktree(selectedRepo.path) : null;
-    const localBranch = localWorktree?.branch ?? selectedSummary?.currentBranch ?? "branch atual";
-    const syncState = syncWorkflowStatus(selectedSummary);
+    const localBranch = localWorktree?.branch ?? selectedSummary?.currentBranch ?? t("branch atual");
+    const syncState = syncWorkflowStatus(selectedSummary, locale);
 
     return [
       {
         id: "parallel-worktree",
-        title: "Começar trabalho paralelo",
-        description: "Criar uma worktree para uma branch existente ou nova.",
+        title: t("Começar trabalho paralelo"),
+        description: t("Criar uma worktree para uma branch existente ou nova."),
         section: "Worktrees",
         icon: <GitFork size={20} />,
         status: blockedWithoutRepo ? "blocked" : "ready",
-        statusLabel: blockedWithoutRepo ? "Sem repositório" : "Pronto",
+        statusLabel: blockedWithoutRepo ? t("Sem repositório") : t("Pronto"),
         steps: [
-          "Escolher branch existente ou criar uma nova branch.",
-          "Confirmar nome ou caminho da pasta da worktree.",
-          "Criar a worktree e passar o foco para ela."
+          t("Escolher branch existente ou criar uma nova branch."),
+          t("Confirmar nome ou caminho da pasta da worktree."),
+          t("Criar a worktree e passar o foco para ela.")
         ],
         requirements: selectedRepo
-          ? [`Repositório: ${selectedRepo.name}`, `Worktree em foco: ${basename(focusedPath)}`]
-          : ["Seleciona um repositório para começar."],
-        primaryLabel: "Criar worktree",
+          ? [`${t("Repositório")}: ${selectedRepo.name}`, `${t("Em foco")}: ${basename(focusedPath)}`]
+          : [t("Seleciona um repositório para começar.")],
+        primaryLabel: t("Criar worktree"),
         disabled: blockedWithoutRepo
       },
       {
         id: "handoff-local",
-        title: "Handoff de worktree para local",
-        description: "Trazer a branch de uma worktree para o workspace local.",
+        title: t("Handoff de worktree para local"),
+        description: t("Trazer a branch de uma worktree para o workspace local."),
         section: "Handoff",
         icon: <ArrowRight size={20} />,
         status: blockedWithoutRepo || !eligibleHandoffWorktrees.length ? "blocked" : "attention",
         statusLabel: blockedWithoutRepo
-          ? "Sem repositório"
+          ? t("Sem repositório")
           : eligibleHandoffWorktrees.length
-            ? `${eligibleHandoffWorktrees.length} disponível${eligibleHandoffWorktrees.length === 1 ? "" : "is"}`
-            : "Sem worktree elegível",
+            ? locale === "en"
+              ? `${eligibleHandoffWorktrees.length} available`
+              : `${eligibleHandoffWorktrees.length} disponível${eligibleHandoffWorktrees.length === 1 ? "" : "is"}`
+            : t("Sem worktree elegível"),
         steps: [
-          "Guardar alterações não commitadas na worktree de origem.",
-          "Fazer detach da branch na worktree de origem.",
-          "Fazer checkout da branch no workspace local.",
-          "Reaplicar alterações não commitadas no workspace local."
+          t("Guardar alterações não commitadas na worktree de origem."),
+          t("Fazer detach da branch na worktree de origem."),
+          t("Fazer checkout da branch no workspace local."),
+          t("Reaplicar alterações não commitadas no workspace local.")
         ],
         requirements: selectedRepo
           ? [
-              `Destino local: ${selectedRepo.path}`,
+              `${t("Destino local")}: ${selectedRepo.path}`,
               eligibleHandoffWorktrees.length
-                ? "Existe pelo menos uma worktree com branch associada."
-                : "Não existe worktree com branch pronta para handoff."
+                ? t("Existe pelo menos uma worktree com branch associada.")
+                : t("Não existe worktree com branch pronta para handoff.")
             ]
-          : ["Seleciona um repositório para começar."],
-        primaryLabel: "Preparar handoff",
+          : [t("Seleciona um repositório para começar.")],
+        primaryLabel: t("Preparar handoff"),
         disabled: blockedWithoutRepo || !eligibleHandoffWorktrees.length
       },
       {
         id: "local-to-worktree",
-        title: "Handoff de local para worktree",
-        description: "Mover a branch local para uma worktree e libertar o workspace local.",
+        title: t("Handoff de local para worktree"),
+        description: t("Mover a branch local para uma worktree e libertar o workspace local."),
         section: "Handoff",
         icon: <GitFork size={20} />,
         status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
         statusLabel: blockedWithoutRepo
-          ? "Sem repositório"
+          ? t("Sem repositório")
           : changedFiles
-            ? formatChangeCount(changedFiles)
-            : "Pronto",
+            ? formatChangeCount(changedFiles, locale)
+            : t("Pronto"),
         steps: [
-          "Reutilizar uma worktree detached existente quando possível.",
-          "Guardar alterações não commitadas locais.",
-          "Fazer checkout de main ou master localmente.",
-          "Fazer checkout da branch na worktree.",
-          "Reaplicar alterações não commitadas na worktree."
+          t("Reutilizar uma worktree detached existente quando possível."),
+          t("Guardar alterações não commitadas locais."),
+          t("Fazer checkout de main ou master no workspace local."),
+          t("Fazer checkout da branch na worktree."),
+          t("Reaplicar alterações não commitadas na worktree.")
         ],
         requirements: selectedRepo
-          ? [`Branch local: ${localBranch}`, `Workspace local: ${selectedRepo.path}`]
-          : ["Seleciona um repositório para começar."],
-        primaryLabel: "Preparar mover",
+          ? [`${t("Branch")} ${t("Local").toLocaleLowerCase()}: ${localBranch}`, `${t("Workspace local")}: ${selectedRepo.path}`]
+          : [t("Seleciona um repositório para começar.")],
+        primaryLabel: t("Preparar mover"),
         disabled: blockedWithoutRepo
       },
       {
         id: "sync-focused",
-        title: "Sincronizar worktree em foco",
-        description: "Executar fetch ou pull na worktree selecionada.",
-        section: "Sincronização",
+        title: t("Sincronizar worktree em foco"),
+        description: t("Executar fetch ou pull na worktree selecionada."),
+        section: t("Sincronização"),
         icon: <RefreshCcw size={20} />,
         status: blockedWithoutRepo ? "blocked" : syncState.status,
-        statusLabel: blockedWithoutRepo ? "Sem repositório" : syncState.label,
+        statusLabel: blockedWithoutRepo ? t("Sem repositório") : syncState.label,
         steps: [
-          "Confirmar a worktree em foco.",
-          "Executar fetch para atualizar referências remotas.",
-          "Executar pull --ff-only quando for seguro avançar."
+          t("Confirmar a worktree em foco."),
+          t("Executar fetch para atualizar referências remotas."),
+          t("Executar pull --ff-only quando for seguro avançar.")
         ],
         requirements: selectedRepo
           ? [
-              `Worktree em foco: ${focusedPath}`,
-              settings.safeMode ? "Modo seguro ativo." : "Modo seguro desligado."
+              `${t("Em foco")}: ${focusedPath}`,
+              settings.safeMode ? t("Modo seguro ativo.") : t("Modo seguro desligado.")
             ]
-          : ["Seleciona um repositório para começar."],
-        primaryLabel: "Preparar pull",
-        secondaryLabel: "Executar fetch",
+          : [t("Seleciona um repositório para começar.")],
+        primaryLabel: t("Preparar pull"),
+        secondaryLabel: t("Executar fetch"),
         disabled: blockedWithoutRepo
       },
       {
         id: "review-changes",
-        title: "Rever alterações locais",
-        description: "Abrir o detalhe da worktree em foco para ver ficheiros alterados.",
-        section: "Revisão",
+        title: t("Rever alterações locais"),
+        description: t("Abrir o detalhe da worktree em foco para ver ficheiros alterados."),
+        section: t("Revisão"),
         icon: <Search size={20} />,
         status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
         statusLabel: blockedWithoutRepo
-          ? "Sem repositório"
+          ? t("Sem repositório")
           : changedFiles
-            ? formatChangeCount(changedFiles)
-            : "Sem alterações",
+            ? formatChangeCount(changedFiles, locale)
+            : t("Sem alterações"),
         steps: [
-          "Abrir a vista de detalhe da worktree em foco.",
-          "Rever ficheiros staged, unstaged e por seguir.",
-          "Decidir entre commit, stash, handoff ou limpeza manual."
+          t("Abrir a vista de detalhe da worktree em foco."),
+          t("Rever ficheiros staged, unstaged e por seguir."),
+          t("Decidir entre commit, stash, handoff ou limpeza manual.")
         ],
         requirements: selectedRepo
-          ? [`Worktree em foco: ${focusedPath}`, `${formatChangeCount(changedFiles)} detetadas.`]
-          : ["Seleciona um repositório para começar."],
-        primaryLabel: "Abrir detalhe",
+          ? [
+              `${t("Em foco")}: ${focusedPath}`,
+              locale === "en"
+                ? `${formatChangeCount(changedFiles, locale)} detected.`
+                : `${formatChangeCount(changedFiles, locale)} detetadas.`
+            ]
+          : [t("Seleciona um repositório para começar.")],
+        primaryLabel: t("Abrir detalhe"),
         disabled: blockedWithoutRepo
       }
     ];
@@ -1587,20 +1987,20 @@ function WorktreeManagerApp() {
   function buildCommandActions(): CommandPaletteAction[] {
     const actions: CommandPaletteAction[] = navItems.map((item) => ({
       id: `page:${item.page}`,
-      title: `Ir para ${item.label}`,
+      title: locale === "en" ? `Go to ${item.label}` : `Ir para ${item.label}`,
       subtitle: getPageMeta(item.page, locale).subtitle,
-      section: "Navegação",
+      section: t("Navegação"),
       keywords: [item.page, item.label],
-      shortcut: item.page === activePage ? "Atual" : undefined,
+      shortcut: item.page === activePage ? t("Atual") : undefined,
       icon: item.icon,
       run: () => navigateToPage(item.page)
     }));
 
     actions.push({
       id: "repo:add",
-      title: repos.length ? "Adicionar repositório" : "Selecionar repositório",
-      subtitle: "Abrir o navegador de pastas local",
-      section: "Repositório",
+      title: repos.length ? shellCopy.addRepositoryLower : shellCopy.selectRepository,
+      subtitle: locale === "en" ? "Open the local folder browser" : "Abrir o navegador de pastas local",
+      section: t("Repositório"),
       keywords: ["repo", "git", "pasta", "selecionar"],
       icon: <Folder size={18} />,
       run: () => setDialog({ kind: "repo-picker" })
@@ -1613,7 +2013,7 @@ function WorktreeManagerApp() {
         subtitle: workflow.statusLabel,
         section: "Workflows",
         keywords: ["workflow", "guiado", workflow.title, workflow.section, workflow.statusLabel],
-        shortcut: workflow.disabled ? "Bloqueado" : undefined,
+        shortcut: workflow.disabled ? (locale === "en" ? "Blocked" : "Bloqueado") : undefined,
         icon: workflow.icon,
         run: () => openGuidedWorkflow(workflow.id)
       });
@@ -1622,17 +2022,17 @@ function WorktreeManagerApp() {
     workspaceRepos.forEach((repo) => {
       actions.push({
         id: `repo:select:${repo.id}`,
-        title: `Ativar repositório: ${repo.name}`,
+        title: locale === "en" ? `Activate repository: ${repo.name}` : `Ativar repositório: ${repo.name}`,
         subtitle: repo.path,
         section: "Workspace",
         keywords: ["repo", "workspace", repo.name, repo.path],
-        shortcut: repo.id === selectedRepoId ? "Ativo" : undefined,
+        shortcut: repo.id === selectedRepoId ? t("Ativo") : undefined,
         icon: <FolderGit2 size={18} />,
         run: () => setSelectedRepoId(repo.id)
       });
       actions.push({
         id: `repo:detail:${repo.id}`,
-        title: `Abrir detalhe: ${repo.name}`,
+        title: locale === "en" ? `Open detail: ${repo.name}` : `Abrir detalhe: ${repo.name}`,
         subtitle: repo.path,
         section: "Workspace",
         keywords: ["detalhe", "repo", repo.name, repo.path],
@@ -1647,17 +2047,17 @@ function WorktreeManagerApp() {
     actions.push(
       {
         id: "repo:refresh",
-        title: "Atualizar dashboard",
+        title: locale === "en" ? "Refresh dashboard" : "Atualizar dashboard",
         subtitle: selectedRepo.name,
-        section: "Ações",
+        section: t("Ações"),
         keywords: ["refresh", "recarregar", "atualizar"],
         icon: <RefreshCcw size={18} />,
         run: () => void refreshDashboard(selectedRepoId, workspaceRepoIds, focusedWorktreePaths)
       },
       {
         id: "repo:fetch",
-        title: "Executar fetch",
-        subtitle: `git fetch --prune em ${basename(focusedPath)}`,
+        title: t("Executar fetch"),
+        subtitle: locale === "en" ? `git fetch --prune in ${basename(focusedPath)}` : `git fetch --prune em ${basename(focusedPath)}`,
         section: "Git",
         keywords: ["fetch", "prune", "remoto"],
         icon: <RefreshCcw size={18} />,
@@ -1665,8 +2065,8 @@ function WorktreeManagerApp() {
       },
       {
         id: "repo:pull",
-        title: "Executar pull",
-        subtitle: `git pull --ff-only em ${basename(focusedPath)}`,
+        title: t("Executar pull"),
+        subtitle: locale === "en" ? `git pull --ff-only in ${basename(focusedPath)}` : `git pull --ff-only em ${basename(focusedPath)}`,
         section: "Git",
         keywords: ["pull", "ff", "atualizar"],
         icon: <GitBranch size={18} />,
@@ -1674,7 +2074,7 @@ function WorktreeManagerApp() {
       },
       {
         id: "worktree:create",
-        title: "Criar worktree",
+        title: t("Criar worktree"),
         subtitle: selectedRepo.name,
         section: "Worktrees",
         keywords: ["nova", "criar", "worktree"],
@@ -1683,7 +2083,7 @@ function WorktreeManagerApp() {
       },
       {
         id: "branch:create",
-        title: "Criar branch",
+        title: locale === "en" ? "Create branch" : "Criar branch",
         subtitle: basename(focusedPath),
         section: "Branches",
         keywords: ["nova", "criar", "branch"],
@@ -1692,8 +2092,8 @@ function WorktreeManagerApp() {
       },
       {
         id: "local:move-to-worktree",
-        title: "Mover branch local para worktree",
-        subtitle: "Handoff do workspace local para uma worktree",
+        title: locale === "en" ? "Move local branch to worktree" : "Mover branch local para worktree",
+        subtitle: locale === "en" ? "Handoff from the local workspace to a worktree" : "Handoff do workspace local para uma worktree",
         section: "Worktrees",
         keywords: ["handoff", "mover", "local", "worktree"],
         icon: <GitFork size={18} />,
@@ -1701,27 +2101,27 @@ function WorktreeManagerApp() {
       },
       {
         id: "open:folder",
-        title: "Abrir pasta em foco",
+        title: locale === "en" ? "Open focused folder" : "Abrir pasta em foco",
         subtitle: focusedPath,
-        section: "Abrir",
+        section: t("Abrir"),
         keywords: ["abrir", "finder", "folder", "pasta"],
         icon: <Folder size={18} />,
         run: () => openExternalPath(focusedPath, "folder")
       },
       {
         id: "open:editor",
-        title: "Abrir em editor",
+        title: locale === "en" ? "Open in editor" : "Abrir em editor",
         subtitle: focusedPath,
-        section: "Abrir",
+        section: t("Abrir"),
         keywords: ["abrir", "editor", "code"],
         icon: <Code2 size={18} />,
         run: () => openExternalPath(focusedPath, "editor")
       },
       {
         id: "open:terminal",
-        title: "Abrir no terminal",
+        title: t("Abrir no terminal"),
         subtitle: focusedPath,
-        section: "Abrir",
+        section: t("Abrir"),
         keywords: ["abrir", "terminal", "shell"],
         icon: <TerminalSquare size={18} />,
         run: () => openExternalPath(focusedPath, "terminal")
@@ -1729,14 +2129,16 @@ function WorktreeManagerApp() {
     );
 
     worktrees.forEach((worktree) => {
-      const title = worktree.branch ? `Focar worktree: ${worktree.branch}` : `Focar worktree: ${basename(worktree.path)}`;
+      const title = worktree.branch
+        ? locale === "en" ? `Focus worktree: ${worktree.branch}` : `Focar worktree: ${worktree.branch}`
+        : locale === "en" ? `Focus worktree: ${basename(worktree.path)}` : `Focar worktree: ${basename(worktree.path)}`;
       actions.push({
         id: `worktree:focus:${worktree.id}`,
         title,
         subtitle: worktree.path,
         section: "Worktrees",
         keywords: ["focar", "worktree", worktree.branch ?? "", worktree.path],
-        shortcut: worktree.isCurrent ? "Foco" : undefined,
+        shortcut: worktree.isCurrent ? t("Em foco") : undefined,
         icon: <GitFork size={18} />,
         run: () => {
           setFocusedWorktreePaths((focusMap) => ({ ...focusMap, [selectedRepo.id]: worktree.path }));
@@ -1747,7 +2149,7 @@ function WorktreeManagerApp() {
       if (!sameWorktreePath(worktree.path, selectedRepo.path) && worktree.branch) {
         actions.push({
           id: `worktree:handoff:${worktree.id}`,
-          title: `Handoff para local: ${worktree.branch}`,
+          title: locale === "en" ? `Handoff to local: ${worktree.branch}` : `Handoff para local: ${worktree.branch}`,
           subtitle: worktree.path,
           section: "Worktrees",
           keywords: ["handoff", "local", "checkout", worktree.branch, worktree.path],
@@ -1762,8 +2164,8 @@ function WorktreeManagerApp() {
       .forEach((branch) => {
         actions.push({
           id: `branch:checkout:${branch.name}`,
-          title: `Checkout branch: ${branch.name}`,
-          subtitle: branch.upstream ?? "Branch local",
+          title: locale === "en" ? `Checkout branch: ${branch.name}` : `Checkout branch: ${branch.name}`,
+          subtitle: branch.upstream ?? (locale === "en" ? "Local branch" : "Branch local"),
           section: "Branches",
           keywords: ["checkout", "switch", "branch", branch.name, branch.upstream ?? ""],
           icon: <GitBranch size={18} />,
@@ -1774,40 +2176,42 @@ function WorktreeManagerApp() {
     actions.push(
       {
         id: "settings:safe-mode",
-        title: settings.safeMode ? "Desligar modo seguro" : "Ativar modo seguro",
-        subtitle: "Pré-validação para operações Git sensíveis",
-        section: "Configurações",
+        title: settings.safeMode
+          ? locale === "en" ? "Turn safe mode off" : "Desligar modo seguro"
+          : locale === "en" ? "Turn safe mode on" : "Ativar modo seguro",
+        subtitle: locale === "en" ? "Preflight checks for sensitive Git operations" : "Pré-validação para operações Git sensíveis",
+        section: pageCopy.settings.nav,
         keywords: ["safe", "seguro", "modo"],
         icon: settings.safeMode ? <ShieldOff size={18} /> : <ShieldCheck size={18} />,
         run: () => void updateSafeMode(!settings.safeMode)
       },
       {
         id: "settings:theme:dark",
-        title: "Tema escuro",
-        subtitle: "Aplicar tema escuro",
-        section: "Configurações",
+        title: locale === "en" ? "Dark theme" : "Tema escuro",
+        subtitle: locale === "en" ? "Apply dark theme" : "Aplicar tema escuro",
+        section: pageCopy.settings.nav,
         keywords: ["tema", "escuro", "dark"],
-        shortcut: themePreference === "dark" ? "Atual" : undefined,
+        shortcut: themePreference === "dark" ? t("Atual") : undefined,
         icon: <Moon size={18} />,
         run: () => setThemePreference("dark")
       },
       {
         id: "settings:theme:light",
-        title: "Tema claro",
-        subtitle: "Aplicar tema claro",
-        section: "Configurações",
+        title: locale === "en" ? "Light theme" : "Tema claro",
+        subtitle: locale === "en" ? "Apply light theme" : "Aplicar tema claro",
+        section: pageCopy.settings.nav,
         keywords: ["tema", "claro", "light"],
-        shortcut: themePreference === "light" ? "Atual" : undefined,
+        shortcut: themePreference === "light" ? t("Atual") : undefined,
         icon: <Sun size={18} />,
         run: () => setThemePreference("light")
       },
       {
         id: "settings:theme:system",
-        title: "Tema do sistema",
-        subtitle: "Seguir preferência do sistema",
-        section: "Configurações",
+        title: locale === "en" ? "System theme" : "Tema do sistema",
+        subtitle: locale === "en" ? "Follow system preference" : "Seguir preferência do sistema",
+        section: pageCopy.settings.nav,
         keywords: ["tema", "sistema", "system"],
-        shortcut: themePreference === "system" ? "Atual" : undefined,
+        shortcut: themePreference === "system" ? t("Atual") : undefined,
         icon: <Monitor size={18} />,
         run: () => setThemePreference("system")
       }
@@ -1820,28 +2224,28 @@ function WorktreeManagerApp() {
     if (!selectedSummary) return null;
 
     return (
-      <section className="repo-hero" aria-label="Repositório selecionado">
+      <section className="repo-hero" aria-label={t("Repositório em foco")}>
         <div className="hero-left">
           <div className="hero-icon">
             <Folder size={34} />
           </div>
           <div>
-            <span>Repositório em foco</span>
+            <span>{t("Repositório em foco")}</span>
             <h2>{selectedSummary.repo.name}</h2>
             <p title={selectedSummary.focusedWorktreePath}>{selectedSummary.focusedWorktreePath}</p>
           </div>
         </div>
         <div className="hero-meta">
-          <span className="valid-badge">Válido</span>
+          <span className="valid-badge">{t("Válido")}</span>
           {selectedSummary.changedFileCount ? (
-            <span className="badge amber">{formatChangeCount(selectedSummary.changedFileCount)}</span>
+            <span className="badge amber">{formatChangeCount(selectedSummary.changedFileCount, locale)}</span>
           ) : (
-            <span className="badge green">Sem alterações</span>
+            <span className="badge green">{t("Sem alterações")}</span>
           )}
           {selectedSummary.stashCount ? (
-            <span className="badge purple">{formatStashCount(selectedSummary.stashCount)}</span>
+            <span className="badge purple">{formatStashCount(selectedSummary.stashCount, locale)}</span>
           ) : null}
-          {renderSyncBadges(selectedSummary)}
+          {renderSyncBadges(selectedSummary, false, locale)}
           <span>{selectedSummary.gitVersion}</span>
         </div>
       </section>
@@ -1852,29 +2256,35 @@ function WorktreeManagerApp() {
     if (!selectedSummary) return null;
 
     return (
-      <section className="stats-grid" aria-label="Métricas">
+      <section className="stats-grid" aria-label={t("Métricas")}>
         <StatCard
           tone="purple"
           icon={<GitFork />}
           label="Worktrees"
           value={selectedSummary.worktreeCount}
-          detail={selectedSummary.dirtyWorktreeCount ? `${selectedSummary.dirtyWorktreeCount} com alterações` : "Todas limpas"}
+          detail={
+            selectedSummary.dirtyWorktreeCount
+              ? locale === "en"
+                ? `${selectedSummary.dirtyWorktreeCount} changed`
+                : `${selectedSummary.dirtyWorktreeCount} com alterações`
+              : t("Todas limpas")
+          }
         />
         <StatCard tone="blue" icon={<GitBranch />} label="Branches" value={selectedSummary.branchCount} detail="Total" />
-        <StatCard tone="green" icon={<CheckCircle2 />} label="Atual" value={selectedSummary.currentBranch} detail="Branch atual" />
+        <StatCard tone="green" icon={<CheckCircle2 />} label={t("Atual")} value={selectedSummary.currentBranch} detail={t("Branch atual")} />
         <StatCard
           tone="purple"
           icon={<RefreshCcw />}
-          label="Sincronização"
+          label={t("Sincronização")}
           value={syncLabel(selectedSummary.ahead ?? 0, selectedSummary.behind ?? 0)}
           detail={`${selectedSummary.branchAheadCount ?? 0} ahead / ${selectedSummary.branchBehindCount ?? 0} behind`}
         />
         <StatCard
           tone="amber"
           icon={<AlertTriangle />}
-          label="Alterações"
+          label={t("Alterações")}
           value={selectedSummary.changedFileCount ?? 0}
-          detail={selectedSummary.stashCount ? formatStashCount(selectedSummary.stashCount) : "Sem stash"}
+          detail={selectedSummary.stashCount ? formatStashCount(selectedSummary.stashCount, locale) : t("Sem stash")}
         />
         <StatCard tone="amber" icon={<Code2 />} label="Commits" value={selectedSummary.commitCount} detail="Total" />
       </section>
@@ -1903,7 +2313,7 @@ function WorktreeManagerApp() {
         onRefresh={() => void refreshDetail(selectedRepo.id, detail?.worktree.path ?? detailWorktreePath ?? selectedFocusedWorktreePath ?? undefined)}
         onSelectWorktree={openWorktreeDetail}
         onOpen={openExternalPath}
-        onCopy={(path) => void copyPath(path, setError)}
+        onCopy={(path) => void copyPath(path, setError, locale)}
         onFetch={(path) => void runDetailAction("Fetch", () => api.fetchRepo(selectedRepo.id, path))}
         onPull={(path) => confirmPull(path, "detail")}
         onHandoffLocal={confirmHandoffWorktreeToLocal}
@@ -1928,12 +2338,12 @@ function WorktreeManagerApp() {
         {selectedRepo && selectedSummary ? renderRepoHero() : renderFocusedRepoPlaceholder()}
         <DashboardSection
           id="workflows"
-          title="Workflows guiados"
-          subtitle="Fluxos orientados para operações frequentes e sensíveis"
+          title={t("Workflows guiados")}
+          subtitle={t("Fluxos orientados para operações frequentes e sensíveis")}
           actions={
             <button className="secondary-button" onClick={() => void refreshDashboard()}>
               {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-              Atualizar
+              {t("Atualizar")}
             </button>
           }
         >
@@ -1960,16 +2370,16 @@ function WorktreeManagerApp() {
         <DashboardSection
           id="worktrees"
           title="Worktrees"
-          subtitle="Gerir worktrees do repositório"
+          subtitle={t("Gerir worktrees do repositório")}
           actions={
             <>
               <button className="secondary-button" onClick={() => void refreshDashboard()}>
                 {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-                Atualizar
+                {t("Atualizar")}
               </button>
               <button className="primary-button" onClick={() => setDialog({ kind: "create-worktree" })}>
                 <Plus size={18} />
-                Nova Worktree
+                {t("Nova Worktree")}
                 <ChevronDown size={14} />
               </button>
             </>
@@ -1983,7 +2393,7 @@ function WorktreeManagerApp() {
             onHandoffLocal={confirmHandoffWorktreeToLocal}
             onMoveLocalToWorktree={confirmMoveLocalBranchToWorktree}
             onOpen={openExternalPath}
-            onCopy={(path) => void copyPath(path, setError)}
+            onCopy={(path) => void copyPath(path, setError, locale)}
             onDelete={(worktree) => setDialog({ kind: "delete-worktree", worktree })}
           />
         </DashboardSection>
@@ -2000,7 +2410,7 @@ function WorktreeManagerApp() {
         <DashboardSection
           id="branches"
           title="Branches"
-          subtitle="Gerir branches do repositório"
+          subtitle={t("Gerir branches do repositório")}
           actions={
             <>
               <button className="secondary-button" onClick={() => void runAction("Fetch", () => api.fetchRepo(selectedRepo.id, selectedFocusedWorktreePath ?? undefined))}>
@@ -2013,7 +2423,7 @@ function WorktreeManagerApp() {
               </button>
               <button className="primary-button" onClick={() => setDialog({ kind: "create-branch" })}>
                 <Plus size={18} />
-                Nova Branch
+                {t("Nova Branch")}
                 <ChevronDown size={14} />
               </button>
             </>
@@ -2034,12 +2444,12 @@ function WorktreeManagerApp() {
     return (
       <DashboardSection
         id="operations"
-        title="Operações recentes"
-        subtitle="Histórico local dos comandos Git"
+        title={t("Operações recentes")}
+        subtitle={t("Histórico local dos comandos Git")}
         actions={
           <button className="secondary-button" onClick={() => void refreshOperations()}>
             {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            Atualizar
+            {t("Atualizar")}
           </button>
         }
       >
@@ -2054,23 +2464,23 @@ function WorktreeManagerApp() {
     return (
       <DashboardSection
         id="integrations"
-        title="Integrações"
-        subtitle="Ferramentas externas para abrir worktrees"
+        title={t("Integrações")}
+        subtitle={t("Ferramentas externas para abrir worktrees")}
         actions={
           <>
             <button className="secondary-button" onClick={() => void refreshIntegrations()}>
               {actionLoading === "integrations" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-              Detetar
+              {t("Detetar")}
             </button>
             {focusedPath ? (
               <>
                 <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "editor")}>
                   <Code2 size={16} />
-                  Testar editor
+                  {t("Testar editor")}
                 </button>
                 <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "terminal")}>
                   <TerminalSquare size={16} />
-                  Testar terminal
+                  {t("Testar terminal")}
                 </button>
               </>
             ) : null}
@@ -2092,7 +2502,7 @@ function WorktreeManagerApp() {
       <DashboardSection id="settings" title={pageCopy.settings.title} subtitle={pageCopy.settings.subtitle}>
         <div className="settings-grid">
           <div className="settings-item">
-            <ThemeControl value={themePreference} onChange={setThemePreference} />
+            <ThemeToggleButton value={themePreference} onChange={setThemePreference} showLabel />
           </div>
           <div className="settings-item">
             <LanguageControl
@@ -2107,6 +2517,14 @@ function WorktreeManagerApp() {
               value={settings.safeMode}
               busy={actionLoading === "settings"}
               onChange={(safeMode) => void updateSafeMode(safeMode)}
+            />
+          </div>
+          <div className="settings-item settings-item-wide">
+            <WorkDefaultsControl
+              settings={settings}
+              busy={actionLoading === "settings" || actionLoading === "settings-folder"}
+              onPickFolder={pickDefaultWorktreeDirectory}
+              onSave={(defaults) => void updateWorkDefaults(defaults)}
             />
           </div>
           <div className="settings-item">
@@ -2205,16 +2623,17 @@ function WorktreeManagerApp() {
   }
 
   return (
-    <div className="app-shell">
+    <I18N_CONTEXT.Provider value={i18n}>
+    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       {loading || actionLoading || detailLoading ? (
         <div className="app-progress" role="progressbar" aria-label={a11yCopy.progress} />
       ) : null}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
 
-      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}>
         <div className="brand">
           <GitFork aria-hidden="true" />
-          <span>Worktree Manager</span>
+          <span className="brand-name">Worktree Manager</span>
         </div>
 
         <nav className="nav-stack" aria-label={shellCopy.navigation}>
@@ -2223,12 +2642,14 @@ function WorktreeManagerApp() {
             <button
               key={item.page}
               aria-current={activePage === item.page ? "page" : undefined}
+              aria-label={item.label}
               className={activePage === item.page ? "nav-item active" : "nav-item"}
               type="button"
               onClick={() => navigateToPage(item.page)}
+              title={item.label}
             >
               {item.icon}
-              {item.label}
+              <span className="nav-item-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -2272,8 +2693,16 @@ function WorktreeManagerApp() {
         </div>
 
         <div className="sidebar-footer">
-          <ThemeControl value={themePreference} onChange={setThemePreference} />
-          <span>v1.0.0</span>
+          <span className="version-label">v1.0.0</span>
+          <button
+            className="icon-button sidebar-collapse-button"
+            type="button"
+            aria-label={sidebarCollapsed ? a11yCopy.expandSidebar : a11yCopy.collapseSidebar}
+            title={sidebarCollapsed ? a11yCopy.expandSidebar : a11yCopy.collapseSidebar}
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
         </div>
       </aside>
 
@@ -2302,6 +2731,7 @@ function WorktreeManagerApp() {
               <CommandIcon size={17} />
               <span>{shellCopy.commands}</span>
             </button>
+            <ThemeToggleButton value={themePreference} onChange={setThemePreference} />
             <button className="primary-button" onClick={() => setDialog({ kind: "repo-picker" })}>
               <Folder size={18} />
               {shellCopy.addRepository}
@@ -2334,10 +2764,12 @@ function WorktreeManagerApp() {
       {dialog?.kind === "create-worktree" && selectedRepo ? (
         <CreateWorktreeDialog
           branches={branches}
+          branchPrefix={settings.branchPrefix}
+          defaultWorktreeDirectory={settings.worktreeDirectory}
           busy={actionLoading !== null}
           onClose={() => setDialog(null)}
           onCreate={(body) =>
-            void runAction("Nova worktree", async () => {
+            void runAction(t("Nova Worktree"), async () => {
               const created = await api.createWorktree(selectedRepo.id, body);
               setFocusedWorktreePaths((focusMap) => ({ ...focusMap, [selectedRepo.id]: created.path }));
               setDialog(null);
@@ -2349,10 +2781,11 @@ function WorktreeManagerApp() {
       {dialog?.kind === "create-branch" && selectedRepo ? (
         <CreateBranchDialog
           branches={localBranches}
+          branchPrefix={settings.branchPrefix}
           busy={actionLoading !== null}
           onClose={() => setDialog(null)}
           onCreate={(body) =>
-            void runAction("Nova branch", async () => {
+            void runAction(t("Nova Branch"), async () => {
               await api.createBranch(selectedRepo.id, {
                 ...body,
                 worktreePath: selectedFocusedWorktreePath ?? undefined
@@ -2365,13 +2798,13 @@ function WorktreeManagerApp() {
 
       {dialog?.kind === "delete-worktree" && selectedRepo ? (
         <ConfirmDeleteDialog
-          title="Remover worktree"
+          title={t("Remover worktree")}
           expected={basename(dialog.worktree.path)}
           label={dialog.worktree.path}
           busy={actionLoading !== null}
           onClose={() => setDialog(null)}
           onConfirm={(confirm) =>
-            void runAction("Remover worktree", async () => {
+            void runAction(t("Remover worktree"), async () => {
               await api.removeWorktree(selectedRepo.id, dialog.worktree.id, confirm);
               setDialog(null);
             })
@@ -2381,13 +2814,13 @@ function WorktreeManagerApp() {
 
       {dialog?.kind === "delete-branch" && selectedRepo ? (
         <ConfirmDeleteDialog
-          title="Apagar branch"
+          title={t("Apagar branch")}
           expected={dialog.branch.name}
           label={dialog.branch.name}
           busy={actionLoading !== null}
           onClose={() => setDialog(null)}
           onConfirm={(confirm) =>
-            void runAction("Apagar branch", async () => {
+            void runAction(t("Apagar branch"), async () => {
               await api.deleteBranch(
                 selectedRepo.id,
                 dialog.branch.name,
@@ -2431,6 +2864,7 @@ function WorktreeManagerApp() {
         />
       ) : null}
     </div>
+    </I18N_CONTEXT.Provider>
   );
 }
 
@@ -2475,6 +2909,8 @@ function DashboardSection({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const { locale } = useI18n();
+
   return (
     <section className="panel" id={id}>
       <div className="section-header">
@@ -2555,6 +2991,8 @@ function AppCrashFallback({
   message: string;
   onRetry: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <main className="crash-shell">
       <section className="crash-panel">
@@ -2562,15 +3000,15 @@ function AppCrashFallback({
           <AlertTriangle size={34} />
         </div>
         <div>
-          <h1>Erro de interface</h1>
-          <p>{message || "A aplicação encontrou um erro inesperado."}</p>
+          <h1>{t("Erro de interface")}</h1>
+          <p>{message || t("A aplicação encontrou um erro inesperado.")}</p>
         </div>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onRetry}>
-            Tentar novamente
+            {t("Tentar novamente")}
           </button>
           <button className="primary-button" type="button" onClick={() => window.location.reload()}>
-            Recarregar
+            {t("Recarregar")}
           </button>
         </div>
       </section>
@@ -2585,6 +3023,8 @@ function WorkflowCard({
   workflow: GuidedWorkflowDefinition;
   onOpen: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <article className={`workflow-card ${workflow.status}`}>
       <div className="workflow-card-header">
@@ -2603,7 +3043,7 @@ function WorkflowCard({
       </ol>
       <button className="secondary-button" disabled={workflow.disabled} type="button" onClick={onOpen}>
         <CheckCircle2 size={16} />
-        Abrir workflow
+        {t("Abrir workflow")}
       </button>
     </article>
   );
@@ -2626,6 +3066,7 @@ function GuidedWorkflowDialog({
   onRun: (workflowId: GuidedWorkflowId, options?: GuidedWorkflowRunOptions) => void;
   onSecondaryRun: (workflowId: GuidedWorkflowId) => void;
 }) {
+  const { t } = useI18n();
   const handoffOptions = localWorkspacePath
     ? worktrees.filter((worktree) => !sameWorktreePath(worktree.path, localWorkspacePath) && Boolean(worktree.branch))
     : [];
@@ -2657,7 +3098,7 @@ function GuidedWorkflowDialog({
 
         {requiresWorktreeChoice ? (
           <label className="workflow-selector">
-            Worktree de origem
+            {t("Worktree de origem")}
             <select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)} disabled={!handoffOptions.length}>
               {handoffOptions.length ? (
                 handoffOptions.map((worktree) => (
@@ -2666,7 +3107,7 @@ function GuidedWorkflowDialog({
                   </option>
                 ))
               ) : (
-                <option value="">Sem worktree elegível</option>
+                <option value="">{t("Sem worktree elegível")}</option>
               )}
             </select>
           </label>
@@ -2674,7 +3115,7 @@ function GuidedWorkflowDialog({
 
         <div className="workflow-dialog-grid">
           <section className="workflow-dialog-block">
-            <h3>Passos</h3>
+            <h3>{t("Passos")}</h3>
             <ol>
               {workflow.steps.map((step) => (
                 <li key={step}>{step}</li>
@@ -2682,7 +3123,7 @@ function GuidedWorkflowDialog({
             </ol>
           </section>
           <section className="workflow-dialog-block">
-            <h3>Pré-condições</h3>
+            <h3>{t("Pré-condições")}</h3>
             <ul>
               {workflow.requirements.map((requirement) => (
                 <li key={requirement}>
@@ -2696,7 +3137,7 @@ function GuidedWorkflowDialog({
 
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           {workflow.secondaryLabel ? (
             <button
@@ -2776,21 +3217,21 @@ function normalizeSearchText(value: string): string {
   return value.trim().toLocaleLowerCase("pt-PT");
 }
 
-function renderWorktreeStatusBadges(worktree: WorktreeRecord, showClean = false) {
+function renderWorktreeStatusBadges(worktree: WorktreeRecord, showClean = false, locale: Locale = "pt") {
   const status = getWorktreeStatus(worktree);
 
   if (status.clean) {
-    return showClean ? <span className="badge green">Limpa</span> : null;
+    return showClean ? <span className="badge green">{translate(locale, "Limpa")}</span> : null;
   }
 
   return (
     <>
       {status.conflicted ? (
-        <span className="badge danger">{formatConflictCount(status.conflicted)}</span>
+        <span className="badge danger">{formatConflictCount(status.conflicted, locale)}</span>
       ) : null}
-      <span className="badge amber">{formatChangeCount(status.total)}</span>
+      <span className="badge amber">{formatChangeCount(status.total, locale)}</span>
       {status.untracked ? (
-        <span className="badge purple">{formatUntrackedCount(status.untracked)}</span>
+        <span className="badge purple">{formatUntrackedCount(status.untracked, locale)}</span>
       ) : null}
     </>
   );
@@ -2798,14 +3239,19 @@ function renderWorktreeStatusBadges(worktree: WorktreeRecord, showClean = false)
 
 function renderSyncBadges(
   sync: { ahead?: number; behind?: number; upstream?: string | null },
-  showSynced = false
+  showSynced = false,
+  locale: Locale = "pt"
 ) {
   const ahead = sync.ahead ?? 0;
   const behind = sync.behind ?? 0;
 
   if (!ahead && !behind) {
     if (!showSynced) return null;
-    return <span className={`badge ${sync.upstream ? "green" : "neutral"}`}>{sync.upstream ? "Sync" : "Sem upstream"}</span>;
+    return (
+      <span className={`badge ${sync.upstream ? "green" : "neutral"}`}>
+        {sync.upstream ? "Sync" : translate(locale, "Sem upstream")}
+      </span>
+    );
   }
 
   return (
@@ -2816,19 +3262,23 @@ function renderSyncBadges(
   );
 }
 
-function formatChangeCount(value: number): string {
+function formatChangeCount(value: number, locale: Locale = "pt"): string {
+  if (locale === "en") return `${value} ${value === 1 ? "change" : "changes"}`;
   return `${value} ${value === 1 ? "alteração" : "alterações"}`;
 }
 
-function formatConflictCount(value: number): string {
+function formatConflictCount(value: number, locale: Locale = "pt"): string {
+  if (locale === "en") return `${value} ${value === 1 ? "conflict" : "conflicts"}`;
   return `${value} ${value === 1 ? "conflito" : "conflitos"}`;
 }
 
-function formatUntrackedCount(value: number): string {
+function formatUntrackedCount(value: number, locale: Locale = "pt"): string {
+  if (locale === "en") return `${value} ${value === 1 ? "new" : "new"}`;
   return `${value} ${value === 1 ? "nova" : "novas"}`;
 }
 
-function formatStashCount(value: number): string {
+function formatStashCount(value: number, locale: Locale = "pt"): string {
+  if (locale === "en") return `${value} ${value === 1 ? "stash" : "stashes"}`;
   return `${value} ${value === 1 ? "stash" : "stashes"}`;
 }
 
@@ -2864,30 +3314,32 @@ function WorkspaceOverview({
   onAdd: () => void;
   onRefresh: () => void;
 }) {
+  const { locale, t } = useI18n();
+
   return (
-    <section className="panel workspace-panel" aria-label="Repositórios ativos">
+    <section className="panel workspace-panel" aria-label={t("Repos ativos")}>
       <div className="section-header">
         <div>
-          <h2>Área de trabalho</h2>
-          <p>Gerir vários repositórios em paralelo e escolher o foco das operações.</p>
+          <h2>{t("Área de trabalho")}</h2>
+          <p>{t("Gerir vários repositórios em paralelo e escolher o foco das operações.")}</p>
         </div>
         <div className="section-actions">
           <button className="secondary-button" onClick={onRefresh}>
             {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            Atualizar todos
+            {t("Atualizar todos")}
           </button>
           <button className="primary-button" onClick={onAdd}>
             <Plus size={18} />
-            Adicionar
+            {t("Adicionar")}
           </button>
         </div>
       </div>
 
-      <div className="workspace-totals" aria-label="Totais da área de trabalho">
+      <div className="workspace-totals" aria-label={locale === "en" ? "Workspace totals" : "Totais da área de trabalho"}>
         <div>
           <FolderGit2 size={18} />
           <strong>{repos.length}</strong>
-          <span>Repos ativos</span>
+          <span>{t("Repos ativos")}</span>
         </div>
         <div>
           <GitFork size={18} />
@@ -2897,7 +3349,7 @@ function WorkspaceOverview({
         <div>
           <AlertTriangle size={18} />
           <strong>{totals.changedFileCount}</strong>
-          <span>Alterações</span>
+          <span>{t("Alterações")}</span>
         </div>
         <div>
           <Clock3 size={18} />
@@ -2944,32 +3396,32 @@ function WorkspaceOverview({
                 </span>
               </button>
               <div className="workspace-card-meta">
-                {error ? (
-                  <span className="badge danger">Erro</span>
+                 {error ? (
+                  <span className="badge danger">{t("Erro")}</span>
                 ) : summary ? (
                   <>
                     <span className="badge blue">{summary.currentBranch}</span>
                     {summary.changedFileCount ? (
-                      <span className="badge amber">{formatChangeCount(summary.changedFileCount)}</span>
+                      <span className="badge amber">{formatChangeCount(summary.changedFileCount, locale)}</span>
                     ) : (
-                      <span className="badge green">Limpo</span>
+                      <span className="badge green">{t("Limpo")}</span>
                     )}
                     {summary.stashCount ? (
-                      <span className="badge purple">{formatStashCount(summary.stashCount)}</span>
+                      <span className="badge purple">{formatStashCount(summary.stashCount, locale)}</span>
                     ) : null}
-                    {renderSyncBadges(summary)}
+                    {renderSyncBadges(summary, false, locale)}
                     <span>{summary.worktreeCount} WT</span>
                     <span>{summary.branchCount} BR</span>
                   </>
                 ) : (
                   <>
                     <Clock3 size={14} />
-                    <span>A carregar</span>
+                    <span>{t("A carregar")}</span>
                   </>
                 )}
               </div>
               {error ? <p className="workspace-card-error">{error}</p> : null}
-              <button className="icon-button compact workspace-remove" title="Remover da área de trabalho" onClick={() => onRemove(repo.id)}>
+              <button className="icon-button compact workspace-remove" title={t("Remover da área de trabalho")} onClick={() => onRemove(repo.id)}>
                 <X size={15} />
               </button>
             </article>
@@ -3007,13 +3459,15 @@ function RepoDetailView({
   onHandoffLocal: (worktree: WorktreeRecord) => void;
   onMoveLocalToWorktree: () => void;
 }) {
+  const { locale, t } = useI18n();
+
   if (!detail) {
     return (
       <section className="panel focus-placeholder">
         {loading ? <Loader2 className="spin" size={22} /> : <AlertTriangle size={22} />}
         <div>
-          <h2>{error ? "Detalhe indisponível" : "A carregar detalhe"}</h2>
-          <p>{error ?? "A recolher estado Git da worktree selecionada."}</p>
+          <h2>{error ? t("Detalhe indisponível") : t("A carregar detalhe")}</h2>
+          <p>{error ?? t("A recolher estado Git da worktree selecionada.")}</p>
         </div>
       </section>
     );
@@ -3037,7 +3491,7 @@ function RepoDetailView({
         </div>
       ) : null}
 
-      <section className="repo-hero detail-hero" aria-label="Detalhe da worktree">
+      <section className="repo-hero detail-hero" aria-label={t("Detalhe da worktree")}>
         <div className="hero-left">
           <div className="hero-icon">
             {isLocalWorkspace ? <Home size={34} /> : <GitFork size={34} />}
@@ -3051,23 +3505,23 @@ function RepoDetailView({
         <div className="detail-hero-actions">
           <button className="secondary-button" onClick={onRefresh}>
             {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            Atualizar
+            {t("Atualizar")}
           </button>
           <button className="secondary-button" onClick={() => onOpen(detail.worktree.path, "folder")}>
             <Folder size={16} />
-            Pasta
+            {t("Pasta")}
           </button>
           <button className="secondary-button" onClick={() => onOpen(detail.worktree.path, "editor")}>
             <Code2 size={16} />
-            Editor
+            {t("Editor")}
           </button>
           <button className="secondary-button" onClick={() => onOpen(detail.worktree.path, "terminal")}>
             <TerminalSquare size={16} />
-            Terminal
+            {t("Terminal")}
           </button>
           <button className="secondary-button" onClick={() => onCopy(detail.worktree.path)}>
             <Copy size={16} />
-            Copiar
+            {t("Copiar")}
           </button>
           <button className="secondary-button" onClick={() => onFetch(detail.worktree.path)}>
             <RefreshCcw size={16} />
@@ -3080,37 +3534,37 @@ function RepoDetailView({
           {isLocalWorkspace ? (
             <button className="primary-button" disabled={moveLocalDisabled} onClick={onMoveLocalToWorktree}>
               <GitFork size={16} />
-              Mover para worktree
+              {t("Mover para worktree")}
             </button>
           ) : (
             <button className="primary-button" disabled={checkoutLocalDisabled} onClick={() => onHandoffLocal(detail.worktree)}>
               <Home size={16} />
-              Checkout local
+              {t("Checkout local")}
             </button>
           )}
         </div>
       </section>
 
-      <section className="stats-grid detail-stats" aria-label="Estado Git">
-        <StatCard tone="green" icon={<GitBranch />} label="Branch" value={detail.branch ?? "detached"} detail={detail.worktree.detached ? "HEAD destacado" : "Branch associada"} />
-        <StatCard tone="blue" icon={<GitFork />} label="Upstream" value={detail.upstream ?? "-"} detail="Ramo remoto" />
-        <StatCard tone="purple" icon={<RefreshCcw />} label="Sincronização" value={syncLabel(detail.ahead, detail.behind)} detail="Ahead / behind" />
-        <StatCard tone="amber" icon={<Clock3 />} label="Último fetch" value={relativeDate(detail.lastFetchAt)} detail="FETCH_HEAD" />
+      <section className="stats-grid detail-stats" aria-label={t("Estado Git")}>
+        <StatCard tone="green" icon={<GitBranch />} label="Branch" value={detail.branch ?? "detached"} detail={detail.worktree.detached ? t("HEAD destacado") : t("Branch associada")} />
+        <StatCard tone="blue" icon={<GitFork />} label="Upstream" value={detail.upstream ?? "-"} detail={t("Ramo remoto")} />
+        <StatCard tone="purple" icon={<RefreshCcw />} label={t("Sincronização")} value={syncLabel(detail.ahead, detail.behind)} detail={t("Ahead / behind")} />
+        <StatCard tone="amber" icon={<Clock3 />} label={t("Último fetch")} value={relativeDate(detail.lastFetchAt, locale)} detail="FETCH_HEAD" />
       </section>
 
-      <DashboardSection id="detail-status" title="Estado local" subtitle="Alterações nesta worktree">
+      <DashboardSection id="detail-status" title={t("Estado local")} subtitle={t("Alterações nesta worktree")}>
         <div className="detail-status-grid">
           <StatusPill label="Total" value={detail.status.total} tone="amber" />
           <StatusPill label="Staged" value={detail.status.staged} tone="green" />
           <StatusPill label="Unstaged" value={detail.status.unstaged} tone="blue" />
           <StatusPill label="Untracked" value={detail.status.untracked} tone="purple" />
-          <StatusPill label="Conflitos" value={detail.status.conflicted} tone="danger" />
+          <StatusPill label={t("Conflitos")} value={detail.status.conflicted} tone="danger" />
           <StatusPill label="Stashes" value={detail.stashCount} tone="purple" />
         </div>
         <ChangedFilesTable files={detail.files} />
       </DashboardSection>
 
-      <DashboardSection id="detail-worktrees" title="Worktrees" subtitle="Worktrees deste repositório">
+      <DashboardSection id="detail-worktrees" title="Worktrees" subtitle={t("Worktrees deste repositório")}>
         <div className="detail-worktree-grid">
           {detail.worktrees.map((worktree) => {
             const active = sameWorktreePath(worktree.path, detail.worktree.path);
@@ -3131,10 +3585,10 @@ function RepoDetailView({
                   <small>{worktree.path}</small>
                 </span>
                 <span className="badges">
-                  {active ? <span className="badge green">Selecionada</span> : null}
-                  {local ? <span className="badge blue">Local</span> : null}
-                  {renderWorktreeStatusBadges(worktree, true)}
-                  {renderSyncBadges(worktree)}
+                  {active ? <span className="badge green">{t("Selecionada")}</span> : null}
+                  {local ? <span className="badge blue">{t("Local")}</span> : null}
+                  {renderWorktreeStatusBadges(worktree, true, locale)}
+                  {renderSyncBadges(worktree, false, locale)}
                 </span>
               </button>
             );
@@ -3163,8 +3617,10 @@ function StatusPill({
 }
 
 function ChangedFilesTable({ files }: { files: RepoDetail["files"] }) {
+  const { t } = useI18n();
+
   if (!files.length) {
-    return <p className="empty-copy">Sem alterações locais.</p>;
+    return <p className="empty-copy">{t("Sem alterações locais.")}</p>;
   }
 
   return (
@@ -3172,8 +3628,8 @@ function ChangedFilesTable({ files }: { files: RepoDetail["files"] }) {
       <table>
         <thead>
           <tr>
-            <th>Ficheiro</th>
-            <th>Estado</th>
+            <th>{t("Ficheiro")}</th>
+            <th>{t("Estado")}</th>
             <th>Index</th>
             <th>Worktree</th>
           </tr>
@@ -3189,7 +3645,7 @@ function ChangedFilesTable({ files }: { files: RepoDetail["files"] }) {
               </td>
               <td>
                 <span className={`badge ${file.label === "Conflito" ? "danger" : file.label === "Por seguir" ? "purple" : "blue"}`}>
-                  {file.label}
+                  {t(file.label)}
                 </span>
               </td>
               <td><code>{file.indexStatus}</code></td>
@@ -3211,12 +3667,14 @@ function FocusedRepoPlaceholder({
   repo: RepoRecord | null;
   error?: string | null;
 }) {
+  const { t } = useI18n();
+
   return (
     <section className="panel focus-placeholder">
       {loading ? <Loader2 className="spin" size={22} /> : <AlertTriangle size={22} />}
       <div>
-        <h2>{repo ? repo.name : "Sem repositório em foco"}</h2>
-        <p>{error ?? "A carregar os dados do repositório selecionado."}</p>
+        <h2>{repo ? repo.name : t("Sem repositório em foco")}</h2>
+        <p>{error ?? t("A carregar os dados do repositório selecionado.")}</p>
       </div>
     </section>
   );
@@ -3237,6 +3695,8 @@ function TableFilters({
   onFilterChange: (value: string) => void;
   filters: Array<{ value: string; label: string }>;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="table-filter-bar">
       <label className="search-field">
@@ -3248,7 +3708,7 @@ function TableFilters({
           placeholder={placeholder}
         />
       </label>
-      <div className="filter-chips" aria-label="Filtros">
+      <div className="filter-chips" aria-label={t("Filtros")}>
         {filters.map((filter) => (
           <button
             key={filter.value}
@@ -3323,6 +3783,7 @@ function WorktreeTable({
   onCopy: (path: string) => void;
   onDelete: (worktree: WorktreeRecord) => void;
 }) {
+  const { locale, t } = useI18n();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<WorktreeFilter>("all");
   const filteredWorktrees = useMemo(
@@ -3349,17 +3810,17 @@ function WorktreeTable({
       <TableFilters
         query={query}
         onQueryChange={setQuery}
-        placeholder="Pesquisar worktrees"
+        placeholder={t("Pesquisar worktrees")}
         activeFilter={filter}
         onFilterChange={(value) => setFilter(value as WorktreeFilter)}
         filters={[
-          { value: "all", label: "Todas" },
-          { value: "current", label: "Em foco" },
-          { value: "dirty", label: "Com alterações" },
-          { value: "clean", label: "Limpas" },
+          { value: "all", label: t("Todas") },
+          { value: "current", label: t("Em foco") },
+          { value: "dirty", label: t("Com alterações") },
+          { value: "clean", label: t("Limpas") },
           { value: "ahead", label: "Ahead" },
           { value: "behind", label: "Behind" },
-          { value: "detached", label: "Detached" }
+          { value: "detached", label: t("Detached") }
         ]}
       />
       {filteredWorktrees.length ? (
@@ -3367,13 +3828,13 @@ function WorktreeTable({
           <table>
             <thead>
               <tr>
-                <th>Caminho</th>
+                <th>{t("Caminho")}</th>
                 <th>Branch</th>
                 <th>Sync</th>
                 <th>HEAD</th>
-                <th>Último Commit</th>
-                <th>Data</th>
-                <th>Ações</th>
+                <th>{t("Último Commit")}</th>
+                <th>{t("Data")}</th>
+                <th>{t("Ações")}</th>
               </tr>
             </thead>
             <tbody>
@@ -3393,38 +3854,38 @@ function WorktreeTable({
                     </td>
                     <td>
                       <div className="badges">
-                        {worktree.isCurrent ? <span className="badge green">Em foco</span> : null}
+                        {worktree.isCurrent ? <span className="badge green">{t("Em foco")}</span> : null}
                         <span className="badge blue">{worktree.branch ?? "detached"}</span>
-                        {renderWorktreeStatusBadges(worktree, true)}
+                        {renderWorktreeStatusBadges(worktree, true, locale)}
                       </div>
                     </td>
-                    <td>{renderSyncBadges(worktree, Boolean(worktree.branch && !worktree.detached))}</td>
+                    <td>{renderSyncBadges(worktree, Boolean(worktree.branch && !worktree.detached), locale)}</td>
                     <td>{worktree.head ? worktree.head.slice(0, 7) : "-"}</td>
                     <td>{worktree.lastCommit?.subject ?? "-"}</td>
-                    <td>{relativeDate(worktree.lastCommit?.date)}</td>
+                    <td>{relativeDate(worktree.lastCommit?.date, locale)}</td>
                     <td>
                       <div className="inline-actions">
                         <RowActions
                           items={[
-                            { label: "Abrir pasta", icon: <Folder size={15} />, onClick: () => onOpen(worktree.path, "folder") },
-                            { label: "Abrir no editor", icon: <Code2 size={15} />, onClick: () => onOpen(worktree.path, "editor") },
-                            { label: "Abrir no terminal", icon: <TerminalSquare size={15} />, onClick: () => onOpen(worktree.path, "terminal") },
-                            { label: "Copiar caminho", icon: <Copy size={15} />, onClick: () => onCopy(worktree.path) },
+                            { label: t("Abrir pasta"), icon: <Folder size={15} />, onClick: () => onOpen(worktree.path, "folder") },
+                            { label: t("Abrir no editor"), icon: <Code2 size={15} />, onClick: () => onOpen(worktree.path, "editor") },
+                            { label: t("Abrir no terminal"), icon: <TerminalSquare size={15} />, onClick: () => onOpen(worktree.path, "terminal") },
+                            { label: t("Copiar caminho"), icon: <Copy size={15} />, onClick: () => onCopy(worktree.path) },
                             isLocalWorkspace
                               ? {
-                                  label: "Mover para worktree",
+                                  label: t("Mover para worktree"),
                                   icon: <GitFork size={15} />,
                                   disabled: moveLocalDisabled,
                                   onClick: onMoveLocalToWorktree
                                 }
                               : {
-                                  label: "Checkout local",
+                                  label: t("Checkout local"),
                                   icon: <Home size={15} />,
                                   disabled: checkoutLocalDisabled,
                                   onClick: () => onHandoffLocal(worktree)
                                 },
                             {
-                              label: "Remover",
+                              label: t("Remover"),
                               icon: <Trash2 size={15} />,
                               danger: true,
                               disabled: worktree.isCurrent,
@@ -3443,15 +3904,15 @@ function WorktreeTable({
       ) : (
         <ActionEmptyState
           icon={<GitFork size={20} />}
-          title={worktrees.length ? "Sem worktrees para os filtros atuais" : "Ainda não existem worktrees"}
+          title={worktrees.length ? t("Sem worktrees para os filtros atuais") : t("Ainda não existem worktrees")}
           description={
             worktrees.length
-              ? "Ajusta a pesquisa ou limpa os filtros para voltar à lista completa."
-              : "Cria uma worktree para trabalhar numa branch em paralelo sem mexer no workspace local."
+              ? t("Ajusta a pesquisa ou limpa os filtros para voltar à lista completa.")
+              : t("Cria uma worktree para trabalhar numa branch em paralelo sem mexer no workspace local.")
           }
-          primaryLabel="Nova Worktree"
+          primaryLabel={t("Nova Worktree")}
           onPrimary={onCreate}
-          secondaryLabel={worktrees.length ? "Limpar filtros" : undefined}
+          secondaryLabel={worktrees.length ? t("Limpar filtros") : undefined}
           onSecondary={() => {
             setQuery("");
             setFilter("all");
@@ -3459,7 +3920,9 @@ function WorktreeTable({
         />
       )}
       <p className="table-foot">
-        Mostrando {filteredWorktrees.length} de {worktrees.length} worktrees
+        {locale === "en"
+          ? `Showing ${filteredWorktrees.length} of ${worktrees.length} worktrees`
+          : `Mostrando ${filteredWorktrees.length} de ${worktrees.length} worktrees`}
       </p>
     </>
   );
@@ -3476,6 +3939,7 @@ function BranchTable({
   onCheckout: (branch: BranchRecord) => void;
   onDelete: (branch: BranchRecord) => void;
 }) {
+  const { locale, t } = useI18n();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<BranchFilter>("all");
   const filteredBranches = useMemo(
@@ -3501,17 +3965,17 @@ function BranchTable({
       <TableFilters
         query={query}
         onQueryChange={setQuery}
-        placeholder="Pesquisar branches"
+        placeholder={t("Pesquisar branches")}
         activeFilter={filter}
         onFilterChange={(value) => setFilter(value as BranchFilter)}
         filters={[
-          { value: "all", label: "Todas" },
-          { value: "local", label: "Locais" },
-          { value: "remote", label: "Remotas" },
-          { value: "current", label: "Atual" },
+          { value: "all", label: t("Todas") },
+          { value: "local", label: t("Locais") },
+          { value: "remote", label: t("Remotas") },
+          { value: "current", label: t("Atual") },
           { value: "ahead", label: "Ahead" },
           { value: "behind", label: "Behind" },
-          { value: "no-upstream", label: "Sem upstream" }
+          { value: "no-upstream", label: t("Sem upstream") }
         ]}
       />
       {filteredBranches.length ? (
@@ -3519,13 +3983,13 @@ function BranchTable({
           <table>
             <thead>
               <tr>
-                <th>Nome</th>
-                <th>Atual</th>
+                <th>{t("Nome")}</th>
+                <th>{t("Atual")}</th>
                 <th>Upstream</th>
                 <th>Sync</th>
-                <th>Último Commit</th>
-                <th>Data</th>
-                <th>Ações</th>
+                <th>{t("Último Commit")}</th>
+                <th>{t("Data")}</th>
+                <th>{t("Ações")}</th>
               </tr>
             </thead>
             <tbody>
@@ -3536,29 +4000,29 @@ function BranchTable({
                   </td>
                   <td>
                     {branch.current ? (
-                      <span className="badge blue">Atual</span>
+                      <span className="badge blue">{t("Atual")}</span>
                     ) : branch.isRemote ? (
-                      <span className="badge neutral">Remota</span>
+                      <span className="badge neutral">{t("Remota")}</span>
                     ) : (
                       "-"
                     )}
                   </td>
                   <td>{branch.upstream ? <span className="badge purple">{branch.upstream}</span> : "-"}</td>
-                  <td>{branch.isRemote ? "-" : renderSyncBadges(branch, true)}</td>
+                  <td>{branch.isRemote ? "-" : renderSyncBadges(branch, true, locale)}</td>
                   <td>{branch.lastCommit?.subject ?? "-"}</td>
-                  <td>{relativeDate(branch.lastCommit?.date)}</td>
+                  <td>{relativeDate(branch.lastCommit?.date, locale)}</td>
                   <td>
                     <div className="inline-actions">
                       <RowActions
                         items={[
                           {
-                            label: "Checkout nesta worktree",
+                            label: t("Checkout nesta worktree"),
                             icon: <GitBranch size={15} />,
                             disabled: branch.current || branch.isRemote,
                             onClick: () => onCheckout(branch)
                           },
                           {
-                            label: "Apagar",
+                            label: t("Apagar"),
                             icon: <Trash2 size={15} />,
                             danger: true,
                             disabled: branch.current || branch.isRemote,
@@ -3576,15 +4040,15 @@ function BranchTable({
       ) : (
         <ActionEmptyState
           icon={<GitBranch size={20} />}
-          title={branches.length ? "Sem branches para os filtros atuais" : "Ainda não existem branches locais"}
+          title={branches.length ? t("Sem branches para os filtros atuais") : t("Ainda não existem branches locais")}
           description={
             branches.length
-              ? "A pesquisa ou filtro atual não encontrou branches."
-              : "Cria uma branch local para iniciar trabalho isolado ou preparar uma nova worktree."
+              ? t("A pesquisa ou filtro atual não encontrou branches.")
+              : t("Cria uma branch local para iniciar trabalho isolado ou preparar uma nova worktree.")
           }
-          primaryLabel="Nova Branch"
+          primaryLabel={t("Nova Branch")}
           onPrimary={onCreate}
-          secondaryLabel={branches.length ? "Limpar filtros" : undefined}
+          secondaryLabel={branches.length ? t("Limpar filtros") : undefined}
           onSecondary={() => {
             setQuery("");
             setFilter("all");
@@ -3592,7 +4056,9 @@ function BranchTable({
         />
       )}
       <p className="table-foot">
-        Mostrando {filteredBranches.length} de {branches.length} branches
+        {locale === "en"
+          ? `Showing ${filteredBranches.length} of ${branches.length} branches`
+          : `Mostrando ${filteredBranches.length} de ${branches.length} branches`}
       </p>
     </>
   );
@@ -3605,6 +4071,7 @@ function OperationsTable({
   operations: OperationRecord[];
   onRefresh: () => void;
 }) {
+  const { locale, t } = useI18n();
   const [expandedOperationId, setExpandedOperationId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<OperationFilter>("all");
@@ -3631,9 +4098,9 @@ function OperationsTable({
     return (
       <ActionEmptyState
         icon={<TerminalSquare size={20} />}
-        title="Ainda não há operações registadas"
-        description="Executa uma ação Git ou atualiza o dashboard para popular o histórico local."
-        primaryLabel="Atualizar"
+        title={t("Ainda não há operações registadas")}
+        description={t("Executa uma ação Git ou atualiza o dashboard para popular o histórico local.")}
+        primaryLabel={t("Atualizar")}
         onPrimary={onRefresh}
       />
     );
@@ -3644,13 +4111,13 @@ function OperationsTable({
       <TableFilters
         query={query}
         onQueryChange={setQuery}
-        placeholder="Pesquisar operações"
+        placeholder={t("Pesquisar operações")}
         activeFilter={filter}
         onFilterChange={(value) => setFilter(value as OperationFilter)}
         filters={[
-          { value: "all", label: "Todas" },
+          { value: "all", label: t("Todas") },
           { value: "success", label: "OK" },
-          { value: "error", label: "Erro" },
+          { value: "error", label: t("Erro") },
           { value: "timeout", label: "Timeout" }
         ]}
       />
@@ -3659,11 +4126,11 @@ function OperationsTable({
           <table>
             <thead>
               <tr>
-                <th>Estado</th>
-                <th>Comando</th>
-                <th>Resumo</th>
-                <th>Duração</th>
-                <th>Data</th>
+                <th>{t("Estado")}</th>
+                <th>{t("Comando")}</th>
+                <th>{t("Resumo")}</th>
+                <th>{t("Duração")}</th>
+                <th>{t("Data")}</th>
                 <th>Logs</th>
               </tr>
             </thead>
@@ -3677,7 +4144,7 @@ function OperationsTable({
                     <tr className="operation-row">
                       <td>
                         <span className={`badge ${operation.status === "success" ? "green" : "danger"}`}>
-                          {operation.status === "success" ? "OK" : "Erro"}
+                          {operation.status === "success" ? "OK" : t("Erro")}
                         </span>
                         {operation.timedOut ? <span className="badge amber">Timeout</span> : null}
                       </td>
@@ -3689,13 +4156,13 @@ function OperationsTable({
                       </td>
                       <td>{operation.summary}</td>
                       <td>{formatDuration(operation.durationMs)}</td>
-                      <td>{relativeDate(operation.finishedAt)}</td>
+                      <td>{relativeDate(operation.finishedAt, locale)}</td>
                       <td>
                         <button
                           aria-expanded={expanded}
-                          aria-label={`${expanded ? "Ocultar" : "Ver"} logs de ${command}`}
+                          aria-label={`${expanded ? t("Ocultar") : t("Ver")} logs ${locale === "en" ? "for" : "de"} ${command}`}
                           className="icon-button compact operation-toggle"
-                          title={expanded ? "Ocultar logs" : "Ver logs"}
+                          title={expanded ? t("Ocultar logs") : t("Ver logs")}
                           type="button"
                           onClick={() => setExpandedOperationId(expanded ? null : operation.id)}
                         >
@@ -3719,19 +4186,21 @@ function OperationsTable({
       ) : (
         <ActionEmptyState
           icon={<TerminalSquare size={20} />}
-          title="Sem operações para os filtros atuais"
-          description="Ajusta a pesquisa ou limpa os filtros para consultar o histórico completo."
-          primaryLabel="Limpar filtros"
+          title={t("Sem operações para os filtros atuais")}
+          description={t("Ajusta a pesquisa ou limpa os filtros para consultar o histórico completo.")}
+          primaryLabel={t("Limpar filtros")}
           onPrimary={() => {
             setQuery("");
             setFilter("all");
           }}
-          secondaryLabel="Atualizar"
+          secondaryLabel={t("Atualizar")}
           onSecondary={onRefresh}
         />
       )}
       <p className="table-foot">
-        Mostrando {Math.min(filteredOperations.length, 24)} de {operations.length} operações
+        {locale === "en"
+          ? `Showing ${Math.min(filteredOperations.length, 24)} of ${operations.length} operations`
+          : `Mostrando ${Math.min(filteredOperations.length, 24)} de ${operations.length} operações`}
       </p>
     </>
   );
@@ -3744,15 +4213,17 @@ function OperationDetail({
   operation: OperationRecord;
   command: string;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="operation-detail">
       <div className="operation-meta-grid">
         <div>
-          <span>Comando</span>
+          <span>{t("Comando")}</span>
           <code>{command}</code>
         </div>
         <div>
-          <span>Diretório</span>
+          <span>{t("Diretório")}</span>
           <code title={operation.cwd}>{operation.cwd}</code>
         </div>
         <div>
@@ -3760,7 +4231,7 @@ function OperationDetail({
           <strong>{operation.exitCode ?? "-"}</strong>
         </div>
         <div>
-          <span>Duração</span>
+          <span>{t("Duração")}</span>
           <strong>{formatDuration(operation.durationMs)}</strong>
         </div>
         <div>
@@ -3768,7 +4239,7 @@ function OperationDetail({
           <strong>{operation.timeoutMs ? formatDuration(operation.timeoutMs) : "-"}</strong>
         </div>
         <div>
-          <span>Sinal</span>
+          <span>{t("Sinal")}</span>
           <strong>{operation.signal ?? "-"}</strong>
         </div>
       </div>
@@ -3790,15 +4261,16 @@ function OperationLogBlock({
   value: string;
   truncated?: boolean;
 }) {
+  const { t } = useI18n();
   const output = value.trim();
 
   return (
     <section className="log-panel">
       <header>
         <h3>{title}</h3>
-        {truncated ? <span className="badge amber">Truncado</span> : null}
+        {truncated ? <span className="badge amber">{t("Truncado")}</span> : null}
       </header>
-      {output ? <pre>{output}</pre> : <p className="log-empty">Sem output.</p>}
+      {output ? <pre>{output}</pre> : <p className="log-empty">{t("Sem output.")}</p>}
     </section>
   );
 }
@@ -3814,6 +4286,7 @@ function RowActions({
     onClick: () => void;
   }>;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -3877,9 +4350,9 @@ function RowActions({
         ref={buttonRef}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label="Abrir menu de ações"
+        aria-label={t("Abrir menu de ações")}
         className="icon-button compact"
-        title="Ações"
+        title={t("Ações")}
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
@@ -3917,39 +4390,48 @@ function RowActions({
   );
 }
 
-function ThemeControl({
+function ThemeToggleButton({
   value,
-  onChange
+  onChange,
+  showLabel = false
 }: {
   value: ThemePreference;
   onChange: (value: ThemePreference) => void;
+  showLabel?: boolean;
 }) {
-  const options: Array<{ value: ThemePreference; label: string; icon: ReactNode }> = [
-    { value: "dark", label: "Escuro", icon: <Moon size={15} /> },
-    { value: "light", label: "Claro", icon: <Sun size={15} /> },
-    { value: "system", label: "Sistema", icon: <Monitor size={15} /> }
-  ];
+  const { t } = useI18n();
+  const current = themeOption(value, t);
+  const nextValue = nextThemePreference(value);
+  const next = themeOption(nextValue, t);
+  const label = `${t("Tema atual")}: ${current.label}. ${t("Mudar para")} ${next.label}.`;
 
   return (
-    <div className="theme-control" aria-label="Tema">
-      <span>Tema</span>
-      <div className="theme-segmented" role="group" aria-label="Escolher tema">
-        {options.map((option) => (
-          <button
-            key={option.value}
-            aria-pressed={value === option.value}
-            className={value === option.value ? "active" : ""}
-            title={option.label}
-            type="button"
-            onClick={() => onChange(option.value)}
-          >
-            {option.icon}
-            <span>{option.label}</span>
-          </button>
-        ))}
-      </div>
+    <div className={showLabel ? "theme-toggle-control labelled" : "theme-toggle-control"}>
+      {showLabel ? <span>{t("Tema")}</span> : null}
+      <button
+        className={showLabel ? "theme-toggle-button labelled" : "theme-toggle-button"}
+        type="button"
+        aria-label={label}
+        title={label}
+        onClick={() => onChange(nextValue)}
+      >
+        {current.icon}
+        {showLabel ? <span>{current.label}</span> : null}
+      </button>
     </div>
   );
+}
+
+function themeOption(value: ThemePreference, t: (value: string) => string): { label: string; icon: ReactNode } {
+  if (value === "dark") return { label: t("Escuro"), icon: <Moon size={16} /> };
+  if (value === "light") return { label: t("Claro"), icon: <Sun size={16} /> };
+  return { label: t("Sistema"), icon: <Monitor size={16} /> };
+}
+
+function nextThemePreference(value: ThemePreference): ThemePreference {
+  if (value === "system") return "light";
+  if (value === "light") return "dark";
+  return "system";
 }
 
 function SafeModeControl({
@@ -3961,15 +4443,16 @@ function SafeModeControl({
   busy: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const { t } = useI18n();
   const options: Array<{ value: boolean; label: string; icon: ReactNode }> = [
-    { value: true, label: "Ativo", icon: <ShieldCheck size={15} /> },
-    { value: false, label: "Desligado", icon: <ShieldOff size={15} /> }
+    { value: true, label: t("Ativo"), icon: <ShieldCheck size={15} /> },
+    { value: false, label: t("Desligado"), icon: <ShieldOff size={15} /> }
   ];
 
   return (
-    <div className="settings-control" aria-label="Modo seguro">
-      <span>Modo seguro</span>
-      <div className="settings-segmented two" role="group" aria-label="Escolher modo seguro">
+    <div className="settings-control" aria-label={t("Modo seguro")}>
+      <span>{t("Modo seguro")}</span>
+      <div className="settings-segmented two" role="group" aria-label={t("Escolher modo seguro")}>
         {options.map((option) => (
           <button
             key={String(option.value)}
@@ -4028,6 +4511,95 @@ function LanguageControl({
   );
 }
 
+function WorkDefaultsControl({
+  settings,
+  busy,
+  onPickFolder,
+  onSave
+}: {
+  settings: AppSettings;
+  busy: boolean;
+  onPickFolder: () => Promise<string | null>;
+  onSave: (defaults: Pick<AppSettings, "branchPrefix" | "worktreeDirectory">) => void;
+}) {
+  const { t } = useI18n();
+  const [branchPrefix, setBranchPrefix] = useState(settings.branchPrefix ?? "");
+  const [worktreeDirectory, setWorktreeDirectory] = useState(settings.worktreeDirectory ?? "");
+
+  useEffect(() => {
+    setBranchPrefix(settings.branchPrefix ?? "");
+    setWorktreeDirectory(settings.worktreeDirectory ?? "");
+  }, [settings.branchPrefix, settings.worktreeDirectory]);
+
+  const dirty =
+    branchPrefix.trim() !== (settings.branchPrefix ?? "") ||
+    worktreeDirectory.trim() !== (settings.worktreeDirectory ?? "");
+
+  async function chooseFolder() {
+    const folder = await onPickFolder();
+    if (folder) setWorktreeDirectory(folder);
+  }
+
+  return (
+    <form
+      className="settings-defaults-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({
+          branchPrefix: branchPrefix.trim(),
+          worktreeDirectory: worktreeDirectory.trim()
+        });
+      }}
+    >
+      <span className="settings-label">{t("Defaults de trabalho")}</span>
+      <label>
+        {t("Prefixo de branch")}
+        <input
+          aria-label={t("Prefixo de branch")}
+          value={branchPrefix}
+          onChange={(event) => setBranchPrefix(event.target.value)}
+          placeholder="feature/"
+        />
+      </label>
+      <label>
+        {t("Local default das worktrees")}
+        <div className="settings-path-row">
+          <input
+            aria-label={t("Local default das worktrees")}
+            value={worktreeDirectory}
+            onChange={(event) => setWorktreeDirectory(event.target.value)}
+            placeholder={t("Usar pasta irmã do repositório")}
+          />
+          <button
+            className="secondary-button compact-button"
+            type="button"
+            disabled={busy}
+            aria-label={t("Escolher local default das worktrees")}
+            onClick={() => void chooseFolder()}
+          >
+            {busy ? <Loader2 className="spin" size={15} /> : <Folder size={15} />}
+            {t("Escolher pasta")}
+          </button>
+          <button
+            className="ghost-button compact-button"
+            type="button"
+            disabled={busy || !worktreeDirectory}
+            onClick={() => setWorktreeDirectory("")}
+          >
+            {t("Limpar")}
+          </button>
+        </div>
+      </label>
+      <div className="settings-defaults-actions">
+        <button className="primary-button compact-button" type="submit" disabled={busy || !dirty}>
+          {busy ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+          {t("Guardar defaults")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function DiagnosticsPanel({
   diagnostics,
   busy,
@@ -4041,24 +4613,25 @@ function DiagnosticsPanel({
   onRefresh: () => void;
   onCopy: () => void;
 }) {
+  const { locale, t } = useI18n();
   const stats = diagnostics?.operationStats;
   const latestFailure = diagnostics?.recentFailures[0] ?? null;
 
   return (
-    <section className="diagnostics-panel" aria-label="Observabilidade">
+    <section className="diagnostics-panel" aria-label={t("Observabilidade")}>
       <div className="diagnostics-header">
         <div>
-          <span className="settings-label">Observabilidade</span>
-          <h3>Diagnóstico local</h3>
+          <span className="settings-label">{t("Observabilidade")}</span>
+          <h3>{t("Diagnóstico local")}</h3>
         </div>
         <div className="diagnostics-actions">
           <button className="secondary-button" disabled={busy} type="button" onClick={onRefresh}>
             {busy ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            Atualizar
+            {t("Atualizar")}
           </button>
           <button className="primary-button" disabled={busy || !diagnostics} type="button" onClick={onCopy}>
             <Copy size={16} />
-            {copied ? "Copiado" : "Copiar JSON"}
+            {copied ? t("Copiado") : t("Copiar JSON")}
           </button>
         </div>
       </div>
@@ -4072,29 +4645,29 @@ function DiagnosticsPanel({
               <small>{diagnostics.platform}</small>
             </div>
             <div className="diagnostic-card">
-              <span>Repositórios</span>
+              <span>{t("Repositórios")}</span>
               <strong>{diagnostics.repositoryCount}</strong>
               <small>v{diagnostics.appVersion}</small>
             </div>
             <div className="diagnostic-card">
-              <span>Operações</span>
+              <span>{t("Operações")}</span>
               <strong>{diagnostics.operationCount}</strong>
-              <small>{stats ? `${stats.success} ok / ${stats.error} falhas` : "-"}</small>
+              <small>{stats ? `${stats.success} ok / ${stats.error} ${t("falhas")}` : "-"}</small>
             </div>
             <div className="diagnostic-card">
               <span>P95</span>
               <strong>{formatDuration(stats?.p95DurationMs)}</strong>
-              <small>média {formatDuration(stats?.averageDurationMs)}</small>
+              <small>{t("média")} {formatDuration(stats?.averageDurationMs)}</small>
             </div>
             <div className="diagnostic-card">
               <span>Timeouts</span>
               <strong>{stats?.timedOut ?? 0}</strong>
-              <small>pior {formatDuration(stats?.slowestDurationMs)}</small>
+              <small>{t("pior")} {formatDuration(stats?.slowestDurationMs)}</small>
             </div>
             <div className="diagnostic-card">
-              <span>Última falha</span>
-              <strong>{relativeDate(stats?.lastFailureAt)}</strong>
-              <small>{latestFailure?.summary || "Sem falhas recentes"}</small>
+              <span>{t("Última falha")}</span>
+              <strong>{relativeDate(stats?.lastFailureAt, locale)}</strong>
+              <small>{latestFailure?.summary || t("Sem falhas recentes")}</small>
             </div>
           </div>
 
@@ -4104,8 +4677,8 @@ function DiagnosticsPanel({
               <code>{diagnostics.statePath ?? "-"}</code>
             </div>
             <div>
-              <span className="settings-label">Gerado</span>
-              <strong>{relativeDate(diagnostics.generatedAt)}</strong>
+              <span className="settings-label">{t("Gerado")}</span>
+              <strong>{relativeDate(diagnostics.generatedAt, locale)}</strong>
             </div>
           </div>
 
@@ -4115,14 +4688,14 @@ function DiagnosticsPanel({
                 <div key={operation.id} className="diagnostic-failure">
                   <AlertTriangle size={15} />
                   <span>{operation.summary || formatCommand(operation)}</span>
-                  <small>{relativeDate(operation.finishedAt)}</small>
+                  <small>{relativeDate(operation.finishedAt, locale)}</small>
                 </div>
               ))}
             </div>
           ) : null}
         </>
       ) : (
-        <div className="empty-inline">Sem diagnóstico disponível.</div>
+        <div className="empty-inline">{t("Sem diagnóstico disponível.")}</div>
       )}
     </section>
   );
@@ -4139,6 +4712,7 @@ function IntegrationsPanel({
   busy: boolean;
   onChange: (integrations: AppSettings["integrations"]) => void;
 }) {
+  const { t } = useI18n();
   const editors = catalog?.editors ?? [];
   const terminals = catalog?.terminals ?? [];
 
@@ -4179,12 +4753,14 @@ function IntegrationGroup<TId extends string>({
   busy: boolean;
   onSelect: (id: TId) => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <section className="integration-group">
       <div className="integration-group-header">
         <div className="workflow-icon">{icon}</div>
         <div>
-          <span className="settings-label">Integração</span>
+          <span className="settings-label">{t("Integração")}</span>
           <h3>{title}</h3>
         </div>
       </div>
@@ -4207,11 +4783,11 @@ function IntegrationGroup<TId extends string>({
                 <small>{option.description}</small>
                 {option.command ? <code>{option.command}</code> : null}
               </span>
-              {option.id === selectedId ? <span className="badge green">Selecionado</span> : null}
+              {option.id === selectedId ? <span className="badge green">{t("Selecionado")}</span> : null}
             </button>
           ))
         ) : (
-          <div className="empty-inline">A carregar integrações.</div>
+          <div className="empty-inline">{t("A carregar integrações.")}</div>
         )}
       </div>
     </section>
@@ -4239,6 +4815,8 @@ function PrivacyPage({
   busy: boolean;
   onCopyReport: () => void;
 }) {
+  const { locale } = useI18n();
+
   return (
     <div className="privacy-layout">
       <section className="privacy-hero">
@@ -4267,7 +4845,7 @@ function PrivacyPage({
             </div>
           </div>
           <p>{copy.telemetryDescription}</p>
-          <span className="badge green">Local-only</span>
+          <span className="badge green">{locale === "en" ? "Local-only" : "Apenas local"}</span>
         </article>
 
         <article className="privacy-card">
@@ -4290,7 +4868,7 @@ function PrivacyPage({
             </div>
             <div>
               <span>{copy.preferences}</span>
-              <strong>{settings.safeMode ? "Safe" : "Manual"}</strong>
+              <strong>{settings.safeMode ? (locale === "en" ? "Safe" : "Seguro") : "Manual"}</strong>
             </div>
           </div>
           <code title={diagnostics?.statePath ?? undefined}>{diagnostics?.statePath ?? "-"}</code>
@@ -4399,6 +4977,7 @@ function CommandPalette({
   onClose: () => void;
   onRun: (action: CommandPaletteAction) => void;
 }) {
+  const { t } = useI18n();
   const titleId = useId();
   const listboxId = useId();
   const [query, setQuery] = useState("");
@@ -4478,24 +5057,24 @@ function CommandPalette({
           <Search size={18} />
           <input
             ref={inputRef}
-            aria-label="Pesquisar comandos"
+            aria-label={t("Pesquisar comandos")}
             aria-controls={listboxId}
             aria-activedescendant={activeOptionId}
             value={query}
-            placeholder="Pesquisar comandos, repositórios, worktrees ou branches"
+            placeholder={t("Pesquisar comandos, repositórios, worktrees ou branches")}
             onChange={(event) => setQuery(event.target.value)}
           />
           {busy ? <Loader2 className="spin" size={16} /> : null}
-          <button className="icon-button compact" type="button" aria-label="Fechar comandos" onClick={onClose}>
+          <button className="icon-button compact" type="button" aria-label={t("Fechar comandos")} onClick={onClose}>
             <X size={16} />
           </button>
         </div>
 
         <h2 id={titleId} className="sr-only">
-          Paleta de comandos
+          {t("Paleta de comandos")}
         </h2>
 
-        <div id={listboxId} className="command-results" role="listbox" aria-label="Comandos">
+        <div id={listboxId} className="command-results" role="listbox" aria-label={t("Comandos")}>
           {visibleActions.length ? (
             groups.map((group) => (
               <div key={group.section} className="command-group">
@@ -4522,7 +5101,7 @@ function CommandPalette({
               </div>
             ))
           ) : (
-            <div className="command-empty">Nenhum comando encontrado.</div>
+            <div className="command-empty">{t("Nenhum comando encontrado.")}</div>
           )}
         </div>
       </div>
@@ -4542,45 +5121,67 @@ function RepoPicker({
   onClose: () => void;
   onSelect: (path: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [browser, setBrowser] = useState<FsListResponse | null>(null);
-  const [pathInput, setPathInput] = useState("");
   const [loading, setLoading] = useState(true);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadPath();
   }, []);
 
-  async function loadPath(path?: string) {
+  async function loadPath(path?: string): Promise<FsListResponse | null> {
     setLoading(true);
     setLocalError(null);
     try {
       const next = await api.listFs(path);
       setBrowser(next);
-      setPathInput(next.path);
+      return next;
     } catch (caught) {
       setLocalError(errorMessage(caught));
+      return null;
     } finally {
       setLoading(false);
     }
   }
 
+  async function chooseFolder() {
+    setPickingFolder(true);
+    setLocalError(null);
+    try {
+      const selected = await api.pickFolder();
+      if (!selected) return;
+
+      const next = await loadPath(selected.path);
+      if (!next) return;
+      if (next.isGitRepo) {
+        await onSelect(next.path);
+        return;
+      }
+
+      setLocalError(t("A pasta escolhida não é um repositório Git. Escolhe uma pasta com .git ou abre uma subpasta listada."));
+    } catch (caught) {
+      setLocalError(errorMessage(caught));
+    } finally {
+      setPickingFolder(false);
+    }
+  }
+
   return (
-    <Modal title="Selecionar Repositório" onClose={onClose}>
+    <Modal title={t("Selecionar Repositório")} onClose={onClose}>
       <div className="picker-grid">
         <div className="picker-main">
-          <form
-            className="path-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void loadPath(pathInput);
-            }}
-          >
-            <input value={pathInput} onChange={(event) => setPathInput(event.target.value)} />
-            <button className="secondary-button" type="submit">
-              Ir
+          <div className="folder-picker-panel">
+            <div>
+              <span className="settings-label">{t("Pasta selecionada")}</span>
+              <code title={browser?.path}>{browser?.path ?? "-"}</code>
+            </div>
+            <button className="primary-button" type="button" disabled={busy || pickingFolder} onClick={() => void chooseFolder()}>
+              {pickingFolder ? <Loader2 className="spin" size={16} /> : <Folder size={16} />}
+              {browser ? t("Escolher outra pasta") : t("Escolher pasta")}
             </button>
-          </form>
+          </div>
 
           {localError ? <div className="inline-error">{localError}</div> : null}
 
@@ -4589,7 +5190,7 @@ function RepoPicker({
               <FolderGit2 size={18} />
               <span title={browser.path}>{browser.path}</span>
               <button className="primary-button compact-button" disabled={busy} onClick={() => void onSelect(browser.path)}>
-                Selecionar pasta atual
+                {t("Selecionar pasta atual")}
               </button>
             </div>
           ) : null}
@@ -4598,7 +5199,7 @@ function RepoPicker({
             {loading ? (
               <div className="loading-row">
                 <Loader2 className="spin" size={18} />
-                A carregar
+                {t("A carregar")}
               </div>
             ) : (
               <>
@@ -4622,7 +5223,7 @@ function RepoPicker({
           </div>
         </div>
         <div className="recent-list">
-          <h3>Recentes</h3>
+          <h3>{t("Recentes")}</h3>
           {repos.length ? (
             repos.map((repo) => (
               <button key={repo.id} onClick={() => void onSelect(repo.path)}>
@@ -4631,7 +5232,7 @@ function RepoPicker({
               </button>
             ))
           ) : (
-            <p>Nenhum repositório recente.</p>
+            <p>{t("Nenhum repositório recente.")}</p>
           )}
         </div>
       </div>
@@ -4650,6 +5251,8 @@ function FolderRow({
   onOpen: () => void;
   onSelect?: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="folder-row">
       <button onClick={onOpen}>
@@ -4658,7 +5261,7 @@ function FolderRow({
       </button>
       {onSelect ? (
         <button className="primary-button compact-button" disabled={busy} onClick={onSelect}>
-          Selecionar
+          {t("Selecionar")}
         </button>
       ) : null}
     </div>
@@ -4667,20 +5270,36 @@ function FolderRow({
 
 function CreateWorktreeDialog({
   branches,
+  branchPrefix,
+  defaultWorktreeDirectory,
   busy,
   onClose,
   onCreate
 }: {
   branches: BranchRecord[];
+  branchPrefix: string;
+  defaultWorktreeDirectory: string;
   busy: boolean;
   onClose: () => void;
   onCreate: (body: { branch: string; newBranch: boolean; name?: string; path?: string }) => void;
 }) {
+  const { t } = useI18n();
   const [branch, setBranch] = useState("");
   const [name, setName] = useState("");
   const [targetPath, setTargetPath] = useState("");
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const branchListId = useId();
+  const cleanBranchPrefix = branchPrefix.trim();
+
+  function changeMode(nextMode: "existing" | "new") {
+    setMode(nextMode);
+    if (nextMode === "new" && !branch.trim() && cleanBranchPrefix) {
+      setBranch(cleanBranchPrefix);
+    }
+    if (nextMode === "existing" && branch === cleanBranchPrefix) {
+      setBranch("");
+    }
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -4693,39 +5312,39 @@ function CreateWorktreeDialog({
   }
 
   return (
-    <Modal title="Nova Worktree" onClose={onClose}>
+    <Modal title={t("Nova Worktree")} onClose={onClose}>
       <form className="dialog-form" onSubmit={submit}>
         <fieldset className="choice-field">
-          <legend>Tipo</legend>
+          <legend>{t("Tipo")}</legend>
           <div className="choice-grid">
             <button
               type="button"
               aria-pressed={mode === "existing"}
               className={mode === "existing" ? "active" : ""}
-              onClick={() => setMode("existing")}
+              onClick={() => changeMode("existing")}
             >
               <GitBranch size={16} />
-              Branch existente
+              {t("Branch existente")}
             </button>
             <button
               type="button"
               aria-pressed={mode === "new"}
               className={mode === "new" ? "active" : ""}
-              onClick={() => setMode("new")}
+              onClick={() => changeMode("new")}
             >
               <Plus size={16} />
-              Nova branch
+              {t("Nova branch")}
             </button>
           </div>
         </fieldset>
         <label>
-          {mode === "new" ? "Nova branch" : "Branch existente"}
+          {mode === "new" ? t("Nova branch") : t("Branch existente")}
           <input
             list={mode === "existing" ? branchListId : undefined}
             required
             value={branch}
             onChange={(event) => setBranch(event.target.value)}
-            placeholder={mode === "new" ? "feature/nova-area" : "feature/auth"}
+            placeholder={mode === "new" ? prefixedPlaceholder(cleanBranchPrefix, "nova-area") : "feature/auth"}
           />
         </label>
         <datalist id={branchListId}>
@@ -4734,24 +5353,24 @@ function CreateWorktreeDialog({
           ))}
         </datalist>
         <label>
-          Nome da pasta
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="opcional" />
+          {t("Nome da pasta")}
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("opcional")} />
         </label>
         <label>
-          Local completo
+          {t("Local completo")}
           <input
             value={targetPath}
             onChange={(event) => setTargetPath(event.target.value)}
-            placeholder="/Users/joseteixeira/Projects/repo-feature"
+            placeholder={defaultWorktreeDirectory || "/Users/joseteixeira/Projects/repo-feature"}
           />
         </label>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           <button className="primary-button" type="submit" disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-            Criar
+            {t("Criar")}
           </button>
         </div>
       </form>
@@ -4761,20 +5380,24 @@ function CreateWorktreeDialog({
 
 function CreateBranchDialog({
   branches,
+  branchPrefix,
   busy,
   onClose,
   onCreate
 }: {
   branches: BranchRecord[];
+  branchPrefix: string;
   busy: boolean;
   onClose: () => void;
   onCreate: (body: { name: string; from?: string }) => void;
 }) {
-  const [name, setName] = useState("");
+  const { t } = useI18n();
+  const cleanBranchPrefix = branchPrefix.trim();
+  const [name, setName] = useState(cleanBranchPrefix);
   const [from, setFrom] = useState("");
 
   return (
-    <Modal title="Nova Branch" onClose={onClose}>
+    <Modal title={t("Nova Branch")} onClose={onClose}>
       <form
         className="dialog-form"
         onSubmit={(event) => {
@@ -4783,13 +5406,18 @@ function CreateBranchDialog({
         }}
       >
         <label>
-          Nome
-          <input required value={name} onChange={(event) => setName(event.target.value)} placeholder="feature/dashboard" />
+          {t("Nome")}
+          <input
+            required
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder={prefixedPlaceholder(cleanBranchPrefix, "dashboard")}
+          />
         </label>
         <label>
-          A partir de
+          {t("A partir de")}
           <select value={from} onChange={(event) => setFrom(event.target.value)}>
-            <option value="">HEAD atual</option>
+            <option value="">{t("HEAD atual")}</option>
             {branches.map((branch) => (
               <option key={branch.name} value={branch.name}>
                 {branch.name}
@@ -4799,11 +5427,11 @@ function CreateBranchDialog({
         </label>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           <button className="primary-button" type="submit" disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-            Criar
+            {t("Criar")}
           </button>
         </div>
       </form>
@@ -4822,6 +5450,8 @@ function ConfirmSensitiveActionDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <Modal title={action.title} onClose={onClose}>
       <form
@@ -4847,7 +5477,7 @@ function ConfirmSensitiveActionDialog({
 
         {action.steps?.length ? (
           <div className="confirmation-block">
-            <h3>Passos previstos</h3>
+            <h3>{t("Passos previstos")}</h3>
             <ol>
               {action.steps.map((step) => (
                 <li key={step}>{step}</li>
@@ -4869,7 +5499,7 @@ function ConfirmSensitiveActionDialog({
 
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           <button className="primary-button" type="submit" disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : <CheckCircle2 size={16} />}
@@ -4896,6 +5526,7 @@ function ConfirmDeleteDialog({
   onClose: () => void;
   onConfirm: (value: string) => void;
 }) {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
 
   return (
@@ -4912,16 +5543,16 @@ function ConfirmDeleteDialog({
           <span title={label}>{label}</span>
         </div>
         <label>
-          Escreve {expected}
+          {t("Escreve")} {expected}
           <input required value={value} onChange={(event) => setValue(event.target.value)} />
         </label>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
-            Cancelar
+            {t("Cancelar")}
           </button>
           <button className="danger-button" type="submit" disabled={busy || value !== expected}>
             {busy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-            Apagar
+            {t("Apagar")}
           </button>
         </div>
       </form>
@@ -5194,7 +5825,7 @@ function normalizeCommandText(value: string) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function relativeDate(value?: string | null) {
+function relativeDate(value?: string | null, locale: Locale = "pt") {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
@@ -5204,11 +5835,21 @@ function relativeDate(value?: string | null) {
   const day = hour * 24;
   const week = day * 7;
 
-  if (diff < minute) return "agora";
-  if (diff < hour) return `há ${Math.max(1, Math.floor(diff / minute))} min`;
-  if (diff < day) return `há ${Math.floor(diff / hour)} horas`;
-  if (diff < week) return `há ${Math.floor(diff / day)} dias`;
-  return `há ${Math.floor(diff / week)} semanas`;
+  if (diff < minute) return locale === "en" ? "now" : "agora";
+  if (diff < hour) {
+    const count = Math.max(1, Math.floor(diff / minute));
+    return locale === "en" ? `${count} min ago` : `há ${count} min`;
+  }
+  if (diff < day) {
+    const count = Math.floor(diff / hour);
+    return locale === "en" ? `${count} ${count === 1 ? "hour" : "hours"} ago` : `há ${count} horas`;
+  }
+  if (diff < week) {
+    const count = Math.floor(diff / day);
+    return locale === "en" ? `${count} ${count === 1 ? "day" : "days"} ago` : `há ${count} dias`;
+  }
+  const count = Math.floor(diff / week);
+  return locale === "en" ? `${count} ${count === 1 ? "week" : "weeks"} ago` : `há ${count} semanas`;
 }
 
 function formatDuration(value?: number | null) {
@@ -5228,15 +5869,15 @@ function formatCommandArg(value: string) {
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
-function openTargetActionLabel(target: OpenTarget) {
-  if (target === "editor") return "Abrir no editor";
-  if (target === "terminal") return "Abrir no terminal";
-  return "Abrir pasta";
+function openTargetActionLabel(target: OpenTarget, locale: Locale = "pt") {
+  if (target === "editor") return translate(locale, "Abrir no editor");
+  if (target === "terminal") return translate(locale, "Abrir no terminal");
+  return translate(locale, "Abrir pasta");
 }
 
-async function writeClipboard(value: string) {
+async function writeClipboard(value: string, locale: Locale = "pt") {
   if (!navigator.clipboard?.writeText) {
-    throw new Error("Área de transferência indisponível.");
+    throw new Error(translate(locale, "Área de transferência indisponível."));
   }
 
   await navigator.clipboard.writeText(value);
@@ -5244,6 +5885,15 @@ async function writeClipboard(value: string) {
 
 function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
+}
+
+function prefixedPlaceholder(prefix: string, suffix: string) {
+  const cleanPrefix = prefix.trim();
+  if (!cleanPrefix) return `feature/${suffix}`;
+  if (cleanPrefix.endsWith("/") || cleanPrefix.endsWith("-") || cleanPrefix.endsWith("_")) {
+    return `${cleanPrefix}${suffix}`;
+  }
+  return `${cleanPrefix}/${suffix}`;
 }
 
 function sameWorktreePath(left: string, right: string) {
@@ -5296,21 +5946,21 @@ function syncLabel(ahead: number, behind: number) {
   return ahead ? `Ahead ${ahead}` : `Behind ${behind}`;
 }
 
-function syncWorkflowStatus(summary: RepoSummary | null): { status: WorkflowStatusTone; label: string } {
-  if (!summary) return { status: "blocked", label: "Sem dados" };
+function syncWorkflowStatus(summary: RepoSummary | null, locale: Locale = "pt"): { status: WorkflowStatusTone; label: string } {
+  if (!summary) return { status: "blocked", label: translate(locale, "Sem dados") };
   const ahead = summary.ahead ?? 0;
   const behind = summary.behind ?? 0;
-  if (ahead && behind) return { status: "attention", label: `Divergente: A${ahead} / B${behind}` };
+  if (ahead && behind) return { status: "attention", label: `${translate(locale, "Divergente")}: A${ahead} / B${behind}` };
   if (behind) return { status: "attention", label: `Behind ${behind}` };
   if (ahead) return { status: "attention", label: `Ahead ${ahead}` };
-  return { status: "ready", label: "Sincronizado" };
+  return { status: "ready", label: translate(locale, "Sincronizado") };
 }
 
-async function copyPath(path: string, setError: (value: string | null) => void) {
+async function copyPath(path: string, setError: (value: string | null) => void, locale: Locale = "pt") {
   try {
     await navigator.clipboard.writeText(path);
   } catch {
-    setError("Não foi possível copiar o caminho.");
+    setError(translate(locale, "Não foi possível copiar o caminho."));
   }
 }
 

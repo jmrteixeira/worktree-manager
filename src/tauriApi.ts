@@ -9,6 +9,7 @@ import type {
   OpenTarget,
   AppSettings,
   OperationRecord,
+  PickFolderResponse,
   RepoDetail,
   RepoRecord,
   RepoSummary,
@@ -29,6 +30,9 @@ export function isTauriRuntime() {
 export const tauriApi = {
   listFs(path?: string) {
     return invoke<FsListResponse>("list_fs", { path });
+  },
+  pickFolder() {
+    return invoke<PickFolderResponse | null>("pick_folder");
   },
   listRepos() {
     return invoke<RepoRecord[]>("list_repos");

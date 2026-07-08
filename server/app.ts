@@ -96,6 +96,14 @@ export function createApp(store: AppStore = createDefaultStore()) {
     })
   );
 
+  app.post(
+    "/api/fs/pick-folder",
+    asyncHandler(async (_req, res) => {
+      const folderPath = await pickFolder();
+      res.json(folderPath ? { path: folderPath } : null);
+    })
+  );
+
   app.get(
     "/api/repos",
     asyncHandler(async (_req, res) => {
@@ -190,13 +198,15 @@ export function createApp(store: AppStore = createDefaultStore()) {
       const branch = requiredBodyString(req.body, "branch");
 
       await runExclusiveRepoTask(repo.id, async () => {
+        const settings = await store.getSettings();
         const targetPath = await createWorktree(
           repo,
           {
             branch,
             newBranch: req.body?.newBranch === true,
             name: optionalBodyString(req.body, "name"),
-            path: optionalBodyString(req.body, "path")
+            path: optionalBodyString(req.body, "path"),
+            basePath: settings.worktreeDirectory
           },
           store
         );
@@ -243,7 +253,8 @@ export function createApp(store: AppStore = createDefaultStore()) {
             repo,
             {
               name: optionalBodyString(req.body, "name"),
-              path: optionalBodyString(req.body, "path")
+              path: optionalBodyString(req.body, "path"),
+              basePath: settings.worktreeDirectory
             },
             store,
             { safeMode: settings.safeMode }
@@ -480,12 +491,39 @@ function settingsFromBody(body: unknown): Partial<AppSettings> {
   }
 
   const integrations = integrationsFromBody(payload?.integrations);
+  const branchPrefix = settingsTextFromBody(payload, "branchPrefix", "Prefixo de branch inválido.");
+  const worktreeDirectory = settingsDirectoryFromBody(payload, "worktreeDirectory");
 
   return {
     ...(typeof safeMode === "boolean" ? { safeMode } : {}),
     ...(isLocale(locale) ? { locale } : {}),
+    ...(branchPrefix !== undefined ? { branchPrefix } : {}),
+    ...(worktreeDirectory !== undefined ? { worktreeDirectory } : {}),
     ...(integrations ? { integrations } : {})
   };
+}
+
+function settingsTextFromBody(
+  payload: Record<string, unknown> | null,
+  key: string,
+  errorMessage: string
+): string | undefined {
+  const value = payload?.[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(errorMessage);
+  return value.trim();
+}
+
+function settingsDirectoryFromBody(
+  payload: Record<string, unknown> | null,
+  key: string
+): string | undefined {
+  const value = settingsTextFromBody(payload, key, "Local default das worktrees inválido.");
+  if (value === undefined || !value) return value;
+  if (!path.isAbsolute(value)) {
+    throw new Error("O local default das worktrees deve ser um caminho absoluto.");
+  }
+  return path.resolve(value);
 }
 
 function isLocale(value: unknown): value is AppSettings["locale"] {
@@ -636,6 +674,85 @@ type OpenCommand = {
   command: string;
   args: string[];
 };
+
+async function pickFolder(platform: NodeJS.Platform = process.platform): Promise<string | null> {
+  const picker = folderPickerCommand(platform);
+  if (!picker) {
+    throw new Error("O seletor nativo de pastas não está disponível neste sistema.");
+  }
+
+  return runFolderPickerCommand(picker);
+}
+
+function folderPickerCommand(platform: NodeJS.Platform): OpenCommand | null {
+  if (platform === "darwin") {
+    return {
+      command: "osascript",
+      args: ["-e", 'POSIX path of (choose folder with prompt "Selecionar repositório Git")']
+    };
+  }
+
+  if (platform === "win32") {
+    return {
+      command: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-STA",
+        "-Command",
+        [
+          "Add-Type -AssemblyName System.Windows.Forms;",
+          "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;",
+          "$dialog.Description = 'Selecionar repositório Git';",
+          "$dialog.ShowNewFolderButton = $false;",
+          "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }"
+        ].join(" ")
+      ]
+    };
+  }
+
+  return {
+    command: "zenity",
+    args: ["--file-selection", "--directory", "--title=Selecionar repositório Git"]
+  };
+}
+
+async function runFolderPickerCommand(picker: OpenCommand): Promise<string | null> {
+  const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
+    const child = spawn(picker.command, picker.args, { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ stdout, stderr, code }));
+  }).catch(async (error: NodeJS.ErrnoException) => {
+    if (picker.command !== "zenity" || error.code !== "ENOENT") {
+      throw error;
+    }
+    return runFolderPickerCommand({
+      command: "kdialog",
+      args: ["--getexistingdirectory", os.homedir(), "Selecionar repositório Git"]
+    }).then((path) => ({ stdout: path ?? "", stderr: "", code: path ? 0 : 1 }));
+  });
+
+  if (result.code !== 0) {
+    return null;
+  }
+
+  const selectedPath = result.stdout.trim();
+  if (!selectedPath) return null;
+  const resolvedPath = path.resolve(selectedPath);
+  const stat = await fs.stat(resolvedPath);
+  if (!stat.isDirectory()) {
+    throw new Error("A seleção não é uma pasta.");
+  }
+  return resolvedPath;
+}
 
 async function openPath(targetPath: string, target: OpenTarget, settings: AppSettings): Promise<void> {
   const opener = buildOpenCommand(targetPath, target, process.platform, process.env, settings);

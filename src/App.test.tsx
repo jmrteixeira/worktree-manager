@@ -12,6 +12,7 @@ vi.mock("./api", () => ({
     detail: vi.fn(),
     branches: vi.fn(),
     listFs: vi.fn(),
+    pickFolder: vi.fn(),
     addRepo: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
@@ -37,6 +38,8 @@ const mockedApi = vi.mocked(api);
 const defaultSettings = {
   safeMode: true,
   locale: "pt" as const,
+  branchPrefix: "",
+  worktreeDirectory: "",
   integrations: {
     editor: "auto" as const,
     terminal: "auto" as const
@@ -161,6 +164,7 @@ describe("App", () => {
       isGitRepo: false,
       entries: []
     });
+    mockedApi.pickFolder.mockResolvedValue(null);
   });
 
   it("renders the empty state when there are no repositories", async () => {
@@ -183,6 +187,66 @@ describe("App", () => {
 
     expect(screen.queryByText("Primeiro arranque")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("worktree-manager.onboardingDismissed")).toBe("true");
+  });
+
+  it("collapses and expands the sidebar from the footer control", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    await screen.findByText("Selecione um repositório para começar");
+    expect(document.querySelector(".app-shell.sidebar-collapsed")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Colapsar barra lateral" }));
+
+    expect(document.querySelector(".app-shell.sidebar-collapsed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expandir barra lateral" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir barra lateral" }));
+
+    expect(document.querySelector(".app-shell.sidebar-collapsed")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Colapsar barra lateral" })).toBeInTheDocument();
+  });
+
+  it("selects a repository with the native folder picker", async () => {
+    const repo = {
+      id: "repo-1",
+      name: "WorktreeManager",
+      path: "/tmp/WorktreeManager",
+      lastOpenedAt: "2026-07-01T10:00:00.000Z"
+    };
+    mockedApi.listRepos.mockResolvedValueOnce([]).mockResolvedValueOnce([repo]);
+    mockedApi.pickFolder.mockResolvedValue({ path: repo.path });
+    mockedApi.listFs.mockImplementation(async (path?: string) => ({
+      path: path ?? "/Users/test",
+      parent: "/Users",
+      isGitRepo: path === repo.path,
+      entries: []
+    }));
+    mockedApi.addRepo.mockResolvedValue(repo);
+    mockedApi.summary.mockResolvedValue({
+      repo,
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: repo.path,
+      currentBranch: "main",
+      commitCount: 1,
+      branchCount: 1,
+      worktreeCount: 1,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.worktrees.mockResolvedValue([]);
+    mockedApi.branches.mockResolvedValue([]);
+
+    render(<App />);
+
+    const selectButtons = await screen.findAllByRole("button", { name: "Selecionar Repositório" });
+    fireEvent.click(selectButtons[0]);
+    expect(await screen.findByRole("dialog", { name: "Selecionar Repositório" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Escolher outra pasta" }));
+
+    await waitFor(() => expect(mockedApi.pickFolder).toHaveBeenCalled());
+    await waitFor(() => expect(mockedApi.addRepo).toHaveBeenCalledWith(repo.path));
   });
 
   it("shows visible keyboard shortcuts on the help page", async () => {
@@ -434,11 +498,26 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("Selecione um repositório para começar")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("Claro"));
+    fireEvent.click(screen.getByRole("button", { name: /Mudar para Claro/ }));
 
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
     expect(document.documentElement.dataset.themePreference).toBe("light");
     expect(window.localStorage.getItem("worktree-manager.theme")).toBe("light");
+  });
+
+  it("switches the interface language and persists the locale", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+
+    await waitFor(() => expect(mockedApi.updateSettings).toHaveBeenCalledWith({ locale: "en" }));
+    await waitFor(() => expect(screen.getAllByRole("heading", { name: "Settings" }).length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText("Language")).toBeInTheDocument();
+    expect(screen.getByText("Safe mode")).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("en");
   });
 
   it("opens the command palette and runs a navigation command", async () => {
@@ -547,6 +626,28 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Desligado" }));
 
     await waitFor(() => expect(mockedApi.updateSettings).toHaveBeenCalledWith({ safeMode: false }));
+  });
+
+  it("updates branch and worktree defaults", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.change(screen.getByLabelText("Prefixo de branch"), {
+      target: { value: "feature/" }
+    });
+    fireEvent.change(screen.getByLabelText("Local default das worktrees"), {
+      target: { value: "/tmp/worktrees" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar defaults" }));
+
+    await waitFor(() =>
+      expect(mockedApi.updateSettings).toHaveBeenCalledWith({
+        branchPrefix: "feature/",
+        worktreeDirectory: "/tmp/worktrees"
+      })
+    );
   });
 
   it("updates the interface language setting", async () => {

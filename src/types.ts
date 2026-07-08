@@ -19,6 +19,10 @@ export type FsListResponse = {
   entries: FsEntry[];
 };
 
+export type PickFolderResponse = {
+  path: string;
+};
+
 export type CommitInfo = {
   sha: string;
   subject: string;
@@ -161,6 +165,8 @@ export type Locale = "pt" | "en";
 export type AppSettings = {
   safeMode: boolean;
   locale: Locale;
+  branchPrefix: string;
+  worktreeDirectory: string;
   integrations: AppIntegrations;
 };
 

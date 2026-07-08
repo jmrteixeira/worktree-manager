@@ -35,6 +35,9 @@ jobs:
       - name: Check synchronized SemVer
         run: npm run version:check
 
+      - name: Check production desktop hardening
+        run: npm run desktop:check-production
+
       - name: Run tests
         run: npm test
 

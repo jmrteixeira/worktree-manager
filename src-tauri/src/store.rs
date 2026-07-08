@@ -101,6 +101,12 @@ impl AppState {
         if let Some(locale) = patch.locale {
             data.settings.locale = locale;
         }
+        if let Some(branch_prefix) = patch.branch_prefix {
+            data.settings.branch_prefix = normalize_text_setting(&branch_prefix);
+        }
+        if let Some(worktree_directory) = patch.worktree_directory {
+            data.settings.worktree_directory = normalize_directory_setting(&worktree_directory)?;
+        }
         if let Some(integrations) = patch.integrations {
             data.settings.integrations = integrations;
         }
@@ -167,6 +173,24 @@ fn repo_id(path: &Path) -> String {
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn normalize_text_setting(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn normalize_directory_setting(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let directory = Path::new(trimmed);
+    if !directory.is_absolute() {
+        return Err("O local default das worktrees deve ser um caminho absoluto.".to_string());
+    }
+
+    Ok(path_string(&absolute_path(directory)))
 }
 
 fn read_state(path: &Path) -> Option<StoreData> {

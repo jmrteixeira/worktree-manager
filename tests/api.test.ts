@@ -39,6 +39,8 @@ describe("api", () => {
     await git(repoDir, "init", "-b", "main");
     await git(repoDir, "config", "user.email", "test@example.com");
     await git(repoDir, "config", "user.name", "Test User");
+    await git(repoDir, "config", "core.autocrlf", "false");
+    await git(repoDir, "config", "core.eol", "lf");
     await fs.writeFile(path.join(repoDir, "README.md"), "# Test\n");
     await git(repoDir, "add", "README.md");
     await git(repoDir, "commit", "-m", "initial commit");
@@ -80,6 +82,8 @@ describe("api", () => {
     await expect(store.getSettings()).resolves.toEqual({
       safeMode: true,
       locale: "pt",
+      branchPrefix: "",
+      worktreeDirectory: "",
       integrations: {
         editor: "auto",
         terminal: "auto"
@@ -89,6 +93,8 @@ describe("api", () => {
     await expect(store.updateSettings({
       safeMode: false,
       locale: "en",
+      branchPrefix: "feature/",
+      worktreeDirectory: path.join(tmpDir, "worktrees"),
       integrations: {
         editor: "cursor",
         terminal: "iterm"
@@ -96,6 +102,8 @@ describe("api", () => {
     })).resolves.toEqual({
       safeMode: false,
       locale: "en",
+      branchPrefix: "feature/",
+      worktreeDirectory: path.join(tmpDir, "worktrees"),
       integrations: {
         editor: "cursor",
         terminal: "iterm"
@@ -106,6 +114,8 @@ describe("api", () => {
     await expect(reloadedStore.getSettings()).resolves.toEqual({
       safeMode: false,
       locale: "en",
+      branchPrefix: "feature/",
+      worktreeDirectory: path.join(tmpDir, "worktrees"),
       integrations: {
         editor: "cursor",
         terminal: "iterm"
@@ -367,6 +377,8 @@ describe("api", () => {
       buildOpenCommand("/tmp/repo", "editor", "darwin", {}, {
         safeMode: true,
         locale: "pt",
+        branchPrefix: "",
+        worktreeDirectory: "",
         integrations: {
           editor: "cursor",
           terminal: "auto"
@@ -380,6 +392,8 @@ describe("api", () => {
       buildOpenCommand("/tmp/repo", "terminal", "darwin", {}, {
         safeMode: true,
         locale: "pt",
+        branchPrefix: "",
+        worktreeDirectory: "",
         integrations: {
           editor: "auto",
           terminal: "iterm"
@@ -436,6 +450,23 @@ describe("api", () => {
     expect(path.basename(targetPath)).toBe("repo-origin-feature-remote-work");
     expect(branch.stdout.trim()).toBe("feature/remote-work");
     expect(upstream.stdout.trim()).toBe("origin/feature/remote-work");
+  });
+
+  it("creates a worktree under a configured default directory", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    const basePath = path.join(tmpDir, "configured", "worktrees");
+
+    const targetPath = await createWorktree(
+      repo,
+      { branch: "feature/default-location", newBranch: true, basePath },
+      store
+    );
+
+    expect(targetPath).toBe(path.join(basePath, "repo-feature-default-location"));
+    expect((await fs.stat(basePath)).isDirectory()).toBe(true);
+    const branch = await git(targetPath, "branch", "--show-current");
+    expect(branch.stdout.trim()).toBe("feature/default-location");
   });
 
   it("blocks checkout when the branch is already checked out in another worktree", async () => {
@@ -521,7 +552,7 @@ describe("api", () => {
     expect(sourceHead.stdout.trim()).toBe("HEAD");
     expect(sourceStatus.stdout.trim()).toBe("");
     expect(readme).toContain("worktree dirty work");
-    expect(notes).toBe("from worktree\n");
+    expect(normalizeNewlines(notes)).toBe("from worktree\n");
   });
 
   it("moves the local checked out branch to a worktree and switches local back to main", async () => {
@@ -568,7 +599,7 @@ describe("api", () => {
     expect(worktreeStatus.stdout).toContain(" M README.md");
     expect(worktreeStatus.stdout).toContain("?? notes.txt");
     expect(readme).toContain("dirty work");
-    expect(notes).toBe("untracked\n");
+    expect(normalizeNewlines(notes)).toBe("untracked\n");
   });
 
   it("reuses an existing detached worktree when moving the local branch back out", async () => {
@@ -632,8 +663,8 @@ describe("api", () => {
     expect(worktreeStatus.stdout).toContain("?? local-notes.txt");
     expect(worktreeStatus.stdout).toContain("?? worktree-notes.txt");
     expect(readme).toContain("local dirty work");
-    expect(localNotes).toBe("from local\n");
-    expect(worktreeNotes).toBe("already in worktree\n");
+    expect(normalizeNewlines(localNotes)).toBe("from local\n");
+    expect(normalizeNewlines(worktreeNotes)).toBe("already in worktree\n");
   });
 
   it("reuses a detached worktree from a custom path when moving the local branch back out", async () => {
@@ -690,4 +721,8 @@ function operationFixture(
 
 function git(cwd: string, ...args: string[]) {
   return execFileAsync("git", args, { cwd });
+}
+
+function normalizeNewlines(value: string) {
+  return value.replace(/\r\n/g, "\n");
 }

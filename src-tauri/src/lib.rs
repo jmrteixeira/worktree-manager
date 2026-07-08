@@ -9,6 +9,7 @@ pub fn run() {
         .manage(store::AppState::load())
         .invoke_handler(tauri::generate_handler![
             commands::list_fs,
+            commands::pick_folder,
             commands::list_repos,
             commands::add_repo,
             commands::get_settings,

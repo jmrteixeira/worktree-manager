@@ -316,6 +316,10 @@ pub struct AppSettings {
     #[serde(default)]
     pub locale: Locale,
     #[serde(default)]
+    pub branch_prefix: String,
+    #[serde(default)]
+    pub worktree_directory: String,
+    #[serde(default)]
     pub integrations: AppIntegrations,
 }
 
@@ -324,6 +328,8 @@ impl Default for AppSettings {
         Self {
             safe_mode: true,
             locale: Locale::Pt,
+            branch_prefix: String::new(),
+            worktree_directory: String::new(),
             integrations: AppIntegrations::default(),
         }
     }
@@ -334,6 +340,8 @@ impl Default for AppSettings {
 pub struct AppSettingsPatch {
     pub safe_mode: Option<bool>,
     pub locale: Option<Locale>,
+    pub branch_prefix: Option<String>,
+    pub worktree_directory: Option<String>,
     pub integrations: Option<AppIntegrations>,
 }
 

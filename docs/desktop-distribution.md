@@ -5,8 +5,10 @@ Este projeto tem uma primeira camada Tauri para evoluir a web app local para uma
 ## Estado Atual
 
 - `npm run desktop:dev` abre a app em Tauri e arranca o frontend/backend atuais com `npm run dev`.
-- `npm run desktop:build` executa o build Tauri e usa `npm run build:desktop-ui` para gerar a UI com `VITE_API_BASE_URL=http://127.0.0.1:4174`.
-- A build desktop ainda precisa de um backend local distribuivel: sidecar Node empacotado ou migração das operacoes Git para comandos Tauri/Rust.
+- `npm run desktop:dev` usa `src-tauri/tauri.dev.conf.json`, que permite `localhost` e WebSocket para desenvolvimento.
+- `npm run desktop:build` executa o build Tauri e usa `npm run build:desktop-ui` para gerar a UI em modo desktop.
+- Builds desktop de producao usam comandos Tauri/Rust diretamente e bloqueiam fallback acidental para o backend HTTP local.
+- O backend Node/Express fica como superficie de desenvolvimento web local, nao como dependencia de producao desktop.
 
 ## Requisitos Locais
 
@@ -19,6 +21,7 @@ Se `cargo` ou `rustc` nao estiverem disponiveis, instalar Rust via rustup antes 
 ## Comandos
 
 ```bash
+npm run desktop:check-production
 npm run desktop:info
 npm run desktop:dev
 npm run desktop:build
@@ -44,6 +47,20 @@ Resumo:
 - `release-please.yml` prepara changelog e versoes semanticas.
 - `release.yml` publica stable e beta por tags SemVer.
 - `nightly.yml` publica a prerelease `nightly`.
+- Todas as workflows de build desktop correm `npm run desktop:check-production`.
+
+## Hardening De Producao Desktop
+
+O hardening atual garante:
+
+- `.env.desktop` exige `VITE_DESKTOP_REQUIRE_TAURI=true`.
+- `.env.desktop` nao define `VITE_API_BASE_URL`.
+- `src-tauri/tauri.conf.json` nao define `devUrl` nem `beforeDevCommand`.
+- `src-tauri/tauri.conf.json` usa CSP de producao sem `localhost`, `127.0.0.1` ou `ws://`.
+- `src-tauri/tauri.dev.conf.json` concentra as permissoes de desenvolvimento para `localhost`.
+- O frontend rejeita chamadas API quando um bundle desktop e aberto fora do runtime Tauri.
+
+Isto evita que um artefacto desktop publicado dependa silenciosamente de `http://127.0.0.1:4174`.
 
 ## Artefactos Windows
 
@@ -68,7 +85,7 @@ Nota: instaladores Windows publicos devem ter assinatura nativa alem das attesta
 
 ## Arquitetura Recomendada
 
-Para uma release publica existem duas rotas aceitaveis:
+Para uma release publica existiam duas rotas aceitaveis:
 
 1. **Backend nativo Tauri/Rust**
    - Migrar as operacoes Git para comandos Tauri.
@@ -80,12 +97,11 @@ Para uma release publica existem duas rotas aceitaveis:
    - Arrancar o sidecar no lifecycle da app.
    - Restringir o backend a `127.0.0.1` e validar origem/token local.
 
-A rota nativa e a mais profissional a medio prazo. A rota sidecar e mais rapida porque reutiliza o backend atual.
+A rota nativa Tauri/Rust foi escolhida para producao. A rota sidecar deve ficar reservada apenas como fallback experimental.
 
 ## Release Blockers
 
 - Trocar os icons gerados pelo Tauri por assets finais da marca.
-- Implementar sidecar ou backend nativo.
 - Configurar assinatura nativa Windows/macOS.
 - Configurar updater assinado.
 - Testar instaladores em maquinas limpas.

@@ -12,7 +12,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -94,6 +94,11 @@ pub fn list_fs(path: Option<String>) -> Result<FsListResponse, String> {
         path: path_string(&directory_path),
         entries,
     })
+}
+
+#[tauri::command]
+pub fn pick_folder() -> Result<Option<PathResponse>, String> {
+    pick_native_folder().map(|path| path.map(|path| PathResponse { path }))
 }
 
 #[tauri::command]
@@ -232,12 +237,14 @@ pub fn create_worktree(
         .lock()
         .map_err(|_| "Operacao Git bloqueada.".to_string())?;
     let repo = repo_or_error(app_state, &repo_id)?;
+    let settings = app_state.get_settings();
     let path = git::create_worktree(
         &repo,
         &body.branch,
         body.new_branch,
         body.name.as_deref(),
         body.path.as_deref(),
+        Some(settings.worktree_directory.as_str()),
         app_state,
     )?;
     Ok(PathResponse {
@@ -340,6 +347,7 @@ pub fn move_local_branch_to_worktree(
         &repo,
         body.name.as_deref(),
         body.path.as_deref(),
+        Some(settings.worktree_directory.as_str()),
         app_state,
         settings.safe_mode,
     )
@@ -544,14 +552,24 @@ fn integration_catalog(settings: &AppSettings) -> IntegrationCatalog {
 
 fn editor_integration_definitions() -> Vec<IntegrationRecord> {
     vec![
-        integration_record("auto", "editor", "Auto", "Usa o comportamento padrao da aplicacao."),
+        integration_record(
+            "auto",
+            "editor",
+            "Auto",
+            "Usa o comportamento padrao da aplicacao.",
+        ),
         integration_record(
             "vscode",
             "editor",
             "Visual Studio Code",
             "Abre worktrees com o comando code.",
         ),
-        integration_record("cursor", "editor", "Cursor", "Abre worktrees com o comando cursor."),
+        integration_record(
+            "cursor",
+            "editor",
+            "Cursor",
+            "Abre worktrees com o comando cursor.",
+        ),
         integration_record(
             "windsurf",
             "editor",
@@ -570,14 +588,24 @@ fn editor_integration_definitions() -> Vec<IntegrationRecord> {
 
 fn terminal_integration_definitions() -> Vec<IntegrationRecord> {
     vec![
-        integration_record("auto", "terminal", "Auto", "Usa o comportamento padrao da aplicacao."),
+        integration_record(
+            "auto",
+            "terminal",
+            "Auto",
+            "Usa o comportamento padrao da aplicacao.",
+        ),
         integration_record(
             "system",
             "terminal",
             "Terminal do sistema",
             "Usa Terminal, cmd.exe ou x-terminal-emulator.",
         ),
-        integration_record("iterm", "terminal", "iTerm", "Abre worktrees no iTerm em macOS."),
+        integration_record(
+            "iterm",
+            "terminal",
+            "iTerm",
+            "Abre worktrees no iTerm em macOS.",
+        ),
         integration_record("warp", "terminal", "Warp", "Abre worktrees no Warp."),
         integration_record(
             "windows-terminal",
@@ -597,7 +625,12 @@ fn terminal_integration_definitions() -> Vec<IntegrationRecord> {
             "GNOME Terminal",
             "Abre worktrees no GNOME Terminal.",
         ),
-        integration_record("konsole", "terminal", "Konsole", "Abre worktrees no Konsole."),
+        integration_record(
+            "konsole",
+            "terminal",
+            "Konsole",
+            "Abre worktrees no Konsole.",
+        ),
     ]
 }
 
@@ -625,18 +658,57 @@ fn integration_available(id: &str, kind: &str) -> bool {
     }
 
     mac_integration_app_name(id)
-        .map(|name| Path::new("/Applications").join(format!("{name}.app")).exists())
+        .map(|name| {
+            Path::new("/Applications")
+                .join(format!("{name}.app"))
+                .exists()
+        })
         .unwrap_or(false)
 }
 
 fn integration_command_name(id: &str, kind: &str) -> Option<String> {
     if kind == "editor" {
         return match id {
-            "vscode" => Some(if cfg!(target_os = "windows") { "code.cmd" } else { "code" }.to_string()),
-            "cursor" => Some(if cfg!(target_os = "windows") { "cursor.cmd" } else { "cursor" }.to_string()),
-            "windsurf" => Some(if cfg!(target_os = "windows") { "windsurf.cmd" } else { "windsurf" }.to_string()),
-            "zed" => Some(if cfg!(target_os = "windows") { "zed.exe" } else { "zed" }.to_string()),
-            "sublime" => Some(if cfg!(target_os = "windows") { "sublime_text.exe" } else { "subl" }.to_string()),
+            "vscode" => Some(
+                if cfg!(target_os = "windows") {
+                    "code.cmd"
+                } else {
+                    "code"
+                }
+                .to_string(),
+            ),
+            "cursor" => Some(
+                if cfg!(target_os = "windows") {
+                    "cursor.cmd"
+                } else {
+                    "cursor"
+                }
+                .to_string(),
+            ),
+            "windsurf" => Some(
+                if cfg!(target_os = "windows") {
+                    "windsurf.cmd"
+                } else {
+                    "windsurf"
+                }
+                .to_string(),
+            ),
+            "zed" => Some(
+                if cfg!(target_os = "windows") {
+                    "zed.exe"
+                } else {
+                    "zed"
+                }
+                .to_string(),
+            ),
+            "sublime" => Some(
+                if cfg!(target_os = "windows") {
+                    "sublime_text.exe"
+                } else {
+                    "subl"
+                }
+                .to_string(),
+            ),
             _ => None,
         };
     }
@@ -773,11 +845,15 @@ fn summarize_operation_stats(operations: &[OperationRecord]) -> OperationStats {
         },
         p95_duration_ms: percentile(&durations, 95),
         slowest_duration_ms: durations.last().copied().unwrap_or(0),
-        last_failure_at: errors.first().map(|operation| operation.finished_at.clone()),
+        last_failure_at: errors
+            .first()
+            .map(|operation| operation.finished_at.clone()),
     }
 }
 
-fn normalize_diagnostic_event(mut event: DiagnosticEventInput) -> Result<DiagnosticEventInput, String> {
+fn normalize_diagnostic_event(
+    mut event: DiagnosticEventInput,
+) -> Result<DiagnosticEventInput, String> {
     if event.level != "info" && event.level != "warning" && event.level != "error" {
         return Err("Nivel de diagnostico invalido.".to_string());
     }
@@ -875,6 +951,88 @@ fn open_external_path(
 struct OpenCommand {
     command: String,
     args: Vec<String>,
+}
+
+fn pick_native_folder() -> Result<Option<String>, String> {
+    let picker = folder_picker_command();
+    run_folder_picker_command(picker).or_else(|error| {
+        if !cfg!(target_os = "linux") || error.kind() != io::ErrorKind::NotFound {
+            return Err(error.to_string());
+        }
+
+        run_folder_picker_command(OpenCommand {
+            command: "kdialog".to_string(),
+            args: vec![
+                "--getexistingdirectory".to_string(),
+                path_string(&home_dir()),
+                "Selecionar repositorio Git".to_string(),
+            ],
+        })
+        .map_err(|fallback_error| fallback_error.to_string())
+    })
+}
+
+fn folder_picker_command() -> OpenCommand {
+    if cfg!(target_os = "macos") {
+        return OpenCommand {
+            command: "osascript".to_string(),
+            args: vec![
+                "-e".to_string(),
+                "POSIX path of (choose folder with prompt \"Selecionar repositorio Git\")"
+                    .to_string(),
+            ],
+        };
+    }
+
+    if cfg!(target_os = "windows") {
+        return OpenCommand {
+            command: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-STA".to_string(),
+                "-Command".to_string(),
+                [
+                    "Add-Type -AssemblyName System.Windows.Forms;",
+                    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;",
+                    "$dialog.Description = 'Selecionar repositorio Git';",
+                    "$dialog.ShowNewFolderButton = $false;",
+                    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }",
+                ]
+                .join(" "),
+            ],
+        };
+    }
+
+    OpenCommand {
+        command: "zenity".to_string(),
+        args: vec![
+            "--file-selection".to_string(),
+            "--directory".to_string(),
+            "--title=Selecionar repositorio Git".to_string(),
+        ],
+    }
+}
+
+fn run_folder_picker_command(picker: OpenCommand) -> Result<Option<String>, io::Error> {
+    let output = Command::new(picker.command).args(picker.args).output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let selected_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selected_path.is_empty() {
+        return Ok(None);
+    }
+
+    let resolved_path = absolute_path(Path::new(&selected_path));
+    if !resolved_path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "A selecao nao e uma pasta.",
+        ));
+    }
+
+    Ok(Some(path_string(&resolved_path)))
 }
 
 fn build_open_command(
@@ -1022,13 +1180,21 @@ fn terminal_open_command(terminal: &TerminalIntegrationId, target_path: &str) ->
     match terminal {
         TerminalIntegrationId::Iterm => OpenCommand {
             command: "open".to_string(),
-            args: vec!["-a".to_string(), "iTerm".to_string(), target_path.to_string()],
+            args: vec![
+                "-a".to_string(),
+                "iTerm".to_string(),
+                target_path.to_string(),
+            ],
         },
         TerminalIntegrationId::Warp => {
             if cfg!(target_os = "macos") {
                 OpenCommand {
                     command: "open".to_string(),
-                    args: vec!["-a".to_string(), "Warp".to_string(), target_path.to_string()],
+                    args: vec![
+                        "-a".to_string(),
+                        "Warp".to_string(),
+                        target_path.to_string(),
+                    ],
                 }
             } else {
                 OpenCommand {

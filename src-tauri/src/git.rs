@@ -659,6 +659,7 @@ pub fn create_worktree(
     new_branch: bool,
     name: Option<&str>,
     requested_path: Option<&str>,
+    default_directory: Option<&str>,
     state: &AppState,
 ) -> Result<PathBuf, String> {
     let repo_path = Path::new(&repo.path);
@@ -667,21 +668,23 @@ pub fn create_worktree(
         return Err("Campo obrigatorio em falta: branch.".to_string());
     }
 
-    let target_path = requested_path
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| absolute_path(Path::new(value)))
-        .unwrap_or_else(|| {
-            repo_path.parent().unwrap_or_else(|| Path::new(".")).join(
-                name.map(sanitize_file_part)
-                    .unwrap_or_else(|| default_worktree_name(&repo.name, branch)),
-            )
-        });
+    let target_path = resolve_worktree_target_path(
+        repo_path,
+        &repo.name,
+        branch,
+        name,
+        requested_path,
+        default_directory,
+    );
 
     if target_path.exists() {
         return Err(format!(
             "Ja existe uma pasta com esse nome: {}",
             path_string(&target_path)
         ));
+    }
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
     let args = if new_branch {
@@ -972,6 +975,7 @@ pub fn move_local_branch_to_worktree(
     repo: &RepoRecord,
     name: Option<&str>,
     requested_path: Option<&str>,
+    default_directory: Option<&str>,
     state: &AppState,
     safe_mode: bool,
 ) -> Result<LocalBranchWorktreeResult, String> {
@@ -987,15 +991,14 @@ pub fn move_local_branch_to_worktree(
         "Nao encontrei uma branch local main ou master para deixar no workspace local.".to_string()
     })?;
 
-    let preferred_worktree_path = requested_path
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| absolute_path(Path::new(value)))
-        .unwrap_or_else(|| {
-            repo_path.parent().unwrap_or_else(|| Path::new(".")).join(
-                name.map(sanitize_file_part)
-                    .unwrap_or_else(|| default_worktree_name(&repo.name, &branch)),
-            )
-        });
+    let preferred_worktree_path = resolve_worktree_target_path(
+        repo_path,
+        &repo.name,
+        &branch,
+        name,
+        requested_path,
+        default_directory,
+    );
     let preferred_path_exists = preferred_worktree_path.exists();
     let preferred_worktree = if preferred_path_exists {
         find_worktree_by_path(repo_path, &preferred_worktree_path, repo_path, Some(state))?
@@ -1089,6 +1092,9 @@ pub fn move_local_branch_to_worktree(
             Default::default(),
         )
     } else {
+        if let Some(parent) = final_worktree_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
         run_git(
             repo_path,
             vec![
@@ -1167,6 +1173,34 @@ pub fn default_worktree_name(repo_name: &str, branch_name: &str) -> String {
         sanitize_file_part(repo_name),
         sanitize_file_part(branch_name)
     )
+}
+
+fn resolve_worktree_target_path(
+    repo_path: &Path,
+    repo_name: &str,
+    branch_name: &str,
+    name: Option<&str>,
+    requested_path: Option<&str>,
+    default_directory: Option<&str>,
+) -> PathBuf {
+    if let Some(requested_path) = requested_path.filter(|value| !value.trim().is_empty()) {
+        return absolute_path(Path::new(requested_path));
+    }
+
+    let directory = default_directory
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| absolute_path(Path::new(value)))
+        .unwrap_or_else(|| {
+            repo_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        });
+    let folder_name = name
+        .map(sanitize_file_part)
+        .unwrap_or_else(|| default_worktree_name(repo_name, branch_name));
+
+    directory.join(folder_name)
 }
 
 pub fn sanitize_file_part(value: &str) -> String {

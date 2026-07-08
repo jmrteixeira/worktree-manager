@@ -85,6 +85,7 @@ npm run build
 Desktop checks and builds:
 
 ```bash
+npm run desktop:check-production
 npm run desktop:info
 npm run desktop:dev
 npm run desktop:build
@@ -123,11 +124,13 @@ Main areas:
 - `.github/`: workflows and community templates.
 
 The backend executes Git with `child_process.spawn` and separated arguments. The Tauri layer is being evolved toward native local commands for a stronger desktop distribution story.
+Production desktop builds use the Tauri command layer directly and reject accidental fallback to the local HTTP API.
 
 ## Security Model
 
 - No authentication is included; this is a local single-user tool.
 - The API is intended for localhost usage only.
+- Packaged desktop builds do not depend on the localhost HTTP API.
 - No remote telemetry is implemented.
 - Nothing leaves the machine without a user-initiated action.
 - Git commands are built from allowlisted operations and separated arguments.

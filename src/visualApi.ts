@@ -204,6 +204,8 @@ let operations: OperationRecord[] = [
 let settings: AppSettings = {
   safeMode: true,
   locale: "pt",
+  branchPrefix: "",
+  worktreeDirectory: "",
   integrations: {
     editor: "auto",
     terminal: "auto"
@@ -225,6 +227,9 @@ export const visualApi = {
         }
       ]
     };
+  },
+  async pickFolder(): Promise<{ path: string }> {
+    return { path: localPath };
   },
   async listRepos(): Promise<RepoRecord[]> {
     return [repo];

@@ -141,6 +141,10 @@ select:focus-visible {
   min-height: 100vh;
 }
 
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+
 .app-progress {
   position: fixed;
   top: 0;
@@ -181,6 +185,13 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 28px;
+  overflow: hidden;
+  transition: padding 180ms ease;
+}
+
+.sidebar.is-collapsed {
+  padding-inline: 10px;
+  gap: 24px;
 }
 
 .brand {
@@ -192,10 +203,20 @@ select:focus-visible {
   font-weight: 800;
 }
 
+.brand-name,
+.nav-item-label,
+.version-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .brand svg {
   width: 34px;
   height: 34px;
   color: var(--accent);
+  flex: 0 0 auto;
 }
 
 .nav-stack {
@@ -237,10 +258,37 @@ select:focus-visible {
   text-align: left;
 }
 
+.nav-item svg {
+  flex: 0 0 auto;
+}
+
 .nav-item.active {
   background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
   color: #fff;
   box-shadow: 0 12px 28px rgba(80, 62, 215, 0.24);
+}
+
+.sidebar.is-collapsed .brand,
+.sidebar.is-collapsed .nav-item,
+.sidebar.is-collapsed .sidebar-footer {
+  justify-content: center;
+}
+
+.sidebar.is-collapsed .brand {
+  padding-inline: 0;
+}
+
+.sidebar.is-collapsed .brand-name,
+.sidebar.is-collapsed .nav-label,
+.sidebar.is-collapsed .nav-item-label,
+.sidebar.is-collapsed .repo-card,
+.sidebar.is-collapsed .version-label {
+  display: none;
+}
+
+.sidebar.is-collapsed .nav-item {
+  width: 100%;
+  padding-inline: 0;
 }
 
 .repo-card {
@@ -315,23 +363,37 @@ select:focus-visible {
   color: var(--text-subtle);
   padding: 0 8px;
   font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.theme-control,
+.sidebar-collapse-button {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  background: var(--surface-weak);
+  border-color: var(--border-soft);
+}
+
+.sidebar-collapse-button:hover {
+  border-color: var(--accent-border);
+  color: var(--text-strong);
+  background: var(--surface-muted);
+}
+
 .settings-control {
   display: grid;
   gap: 8px;
   margin-bottom: 18px;
 }
 
-.theme-control > span,
 .settings-control > span {
   color: var(--text-subtle);
   font-size: 11px;
   text-transform: uppercase;
 }
 
-.theme-segmented,
 .settings-segmented {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -347,7 +409,6 @@ select:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.theme-segmented button,
 .settings-segmented button {
   min-width: 0;
   border: 1px solid transparent;
@@ -361,19 +422,57 @@ select:focus-visible {
   line-height: 1.1;
 }
 
-.theme-segmented button.active,
 .settings-segmented button.active {
   border-color: var(--accent-border);
   background: var(--accent-soft);
   color: var(--text-primary);
 }
 
-.theme-segmented button span,
 .settings-segmented button span {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.theme-toggle-control {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.theme-toggle-control.labelled {
+  display: grid;
+  gap: 8px;
+}
+
+.theme-toggle-control.labelled > span {
+  color: var(--text-subtle);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.theme-toggle-button {
+  width: 40px;
+  min-height: 40px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--button-bg);
+  color: var(--text-primary);
+}
+
+.theme-toggle-button:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.theme-toggle-button.labelled {
+  width: auto;
+  justify-content: flex-start;
+  gap: 9px;
+  padding: 0 12px;
 }
 
 .settings-grid {
@@ -393,7 +492,11 @@ select:focus-visible {
   padding: 14px;
 }
 
-.settings-item .theme-control,
+.settings-item-wide {
+  grid-column: span 2;
+}
+
+.settings-item .theme-toggle-control,
 .settings-item .settings-control {
   margin-bottom: 0;
 }
@@ -402,6 +505,29 @@ select:focus-visible {
   color: var(--text-subtle);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+.settings-defaults-form {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-defaults-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--text-secondary);
+}
+
+.settings-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-defaults-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .diagnostics-panel {
@@ -1087,7 +1213,7 @@ select:focus-visible {
 
 .workspace-totals {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -1121,7 +1247,7 @@ select:focus-visible {
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -2288,6 +2414,33 @@ code {
   margin-bottom: 14px;
 }
 
+.folder-picker-panel {
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-weak);
+  padding: 12px;
+}
+
+.folder-picker-panel > div {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.folder-picker-panel code {
+  overflow: hidden;
+  color: var(--code-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 input,
 select {
   min-height: 42px;
@@ -2647,7 +2800,8 @@ select:focus {
 }
 
 @media (max-width: 980px) {
-  .app-shell {
+  .app-shell,
+  .app-shell.sidebar-collapsed {
     grid-template-columns: 1fr;
   }
 
@@ -2657,6 +2811,36 @@ select:focus {
     transform: translateX(-100%);
     transition: transform 180ms ease;
     width: 250px;
+  }
+
+  .sidebar.is-collapsed {
+    padding: 24px 14px;
+    gap: 28px;
+  }
+
+  .sidebar.is-collapsed .brand,
+  .sidebar.is-collapsed .nav-item {
+    justify-content: flex-start;
+  }
+
+  .sidebar.is-collapsed .sidebar-footer {
+    justify-content: space-between;
+  }
+
+  .sidebar.is-collapsed .brand {
+    padding: 0 8px;
+  }
+
+  .sidebar.is-collapsed .brand-name,
+  .sidebar.is-collapsed .nav-label,
+  .sidebar.is-collapsed .nav-item-label,
+  .sidebar.is-collapsed .repo-card,
+  .sidebar.is-collapsed .version-label {
+    display: block;
+  }
+
+  .sidebar.is-collapsed .nav-item {
+    padding: 0 12px;
   }
 
   .sidebar.sidebar-open {
@@ -2673,6 +2857,14 @@ select:focus {
 
   .topbar-actions {
     flex-wrap: wrap;
+  }
+
+  .settings-item-wide {
+    grid-column: span 1;
+  }
+
+  .settings-path-row {
+    grid-template-columns: 1fr;
   }
 
   .stats-grid {
@@ -2714,11 +2906,17 @@ select:focus {
   .topbar .primary-button,
   .topbar .command-trigger,
   .section-actions > *,
+  .folder-picker-panel,
+  .folder-picker-panel .primary-button,
   .privacy-hero .primary-button,
   .empty-state .primary-button,
   .onboarding-actions > *,
   .action-empty-actions > * {
     width: 100%;
+  }
+
+  .folder-picker-panel {
+    grid-template-columns: 1fr;
   }
 
   .topbar-actions {
