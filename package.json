@@ -2,6 +2,7 @@
   "name": "worktree-manager",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n backend,frontend -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
@@ -14,6 +15,8 @@
     "desktop:info": "tauri info",
     "build": "tsc --noEmit && vite build",
     "build:desktop-ui": "tsc --noEmit && vite build --mode desktop",
+    "version:check": "node scripts/check-version.mjs",
+    "release:checksums": "node scripts/checksums.mjs",
     "test": "vitest run",
     "preview": "vite preview"
   },

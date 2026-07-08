@@ -9,11 +9,15 @@ import {
   Command as CommandIcon,
   Code2,
   Copy,
+  Database,
+  EyeOff,
   Folder,
   FolderGit2,
   GitBranch,
   GitFork,
+  HelpCircle,
   Home,
+  Languages,
   Loader2,
   Menu,
   Monitor,
@@ -24,6 +28,7 @@ import {
   RefreshCcw,
   Settings,
   Search,
+  Shield,
   ShieldCheck,
   ShieldOff,
   Sun,
@@ -40,6 +45,7 @@ import type {
   GitStatusSummary,
   IntegrationCatalog,
   IntegrationRecord,
+  Locale,
   OpenTarget,
   AppSettings,
   OperationRecord,
@@ -82,6 +88,8 @@ type AppPage =
   | "branches"
   | "operations"
   | "integrations"
+  | "privacy"
+  | "help"
   | "settings";
 type WorktreeFilter = "all" | "current" | "dirty" | "clean" | "ahead" | "behind" | "detached";
 type BranchFilter = "all" | "local" | "remote" | "current" | "ahead" | "behind" | "no-upstream";
@@ -130,7 +138,375 @@ type ToastRecord = {
 const ACTIVE_REPOS_STORAGE_KEY = "worktree-manager.activeRepoIds";
 const FOCUSED_WORKTREES_STORAGE_KEY = "worktree-manager.focusedWorktreePaths";
 const THEME_STORAGE_KEY = "worktree-manager.theme";
+const ONBOARDING_STORAGE_KEY = "worktree-manager.onboardingDismissed";
 const DEFAULT_PAGE: AppPage = "dashboard";
+
+const PAGE_COPY: Record<Locale, Record<AppPage, { nav: string; title: string; subtitle: string }>> = {
+  pt: {
+    dashboard: {
+      nav: "Dashboard",
+      title: "Dashboard",
+      subtitle: "Visão geral da área de trabalho e do repositório em foco"
+    },
+    detail: {
+      nav: "Detalhe",
+      title: "Detalhe",
+      subtitle: "Estado Git da worktree selecionada"
+    },
+    workflows: {
+      nav: "Workflows",
+      title: "Workflows",
+      subtitle: "Operações guiadas para trabalho em paralelo"
+    },
+    worktrees: {
+      nav: "Worktrees",
+      title: "Worktrees",
+      subtitle: "Gerir worktrees do repositório em foco"
+    },
+    branches: {
+      nav: "Branches",
+      title: "Branches",
+      subtitle: "Gerir branches e sincronização Git"
+    },
+    operations: {
+      nav: "Operações",
+      title: "Operações",
+      subtitle: "Histórico local dos comandos Git"
+    },
+    integrations: {
+      nav: "Integrações",
+      title: "Integrações",
+      subtitle: "Editor, terminal e ferramentas externas"
+    },
+    privacy: {
+      nav: "Dados e privacidade",
+      title: "Dados e privacidade",
+      subtitle: "Local-first, telemetria e dados guardados"
+    },
+    help: {
+      nav: "Ajuda",
+      title: "Ajuda",
+      subtitle: "Atalhos, acessibilidade e primeiros passos"
+    },
+    settings: {
+      nav: "Configurações",
+      title: "Configurações",
+      subtitle: "Preferências locais da aplicação"
+    }
+  },
+  en: {
+    dashboard: {
+      nav: "Dashboard",
+      title: "Dashboard",
+      subtitle: "Workspace and focused repository overview"
+    },
+    detail: {
+      nav: "Detail",
+      title: "Detail",
+      subtitle: "Git status for the selected worktree"
+    },
+    workflows: {
+      nav: "Workflows",
+      title: "Workflows",
+      subtitle: "Guided operations for parallel work"
+    },
+    worktrees: {
+      nav: "Worktrees",
+      title: "Worktrees",
+      subtitle: "Manage worktrees in the focused repository"
+    },
+    branches: {
+      nav: "Branches",
+      title: "Branches",
+      subtitle: "Manage branches and Git synchronization"
+    },
+    operations: {
+      nav: "Operations",
+      title: "Operations",
+      subtitle: "Local history of Git commands"
+    },
+    integrations: {
+      nav: "Integrations",
+      title: "Integrations",
+      subtitle: "Editor, terminal and external tools"
+    },
+    privacy: {
+      nav: "Data and privacy",
+      title: "Data and privacy",
+      subtitle: "Local-first behavior, telemetry and stored data"
+    },
+    help: {
+      nav: "Help",
+      title: "Help",
+      subtitle: "Shortcuts, accessibility and first steps"
+    },
+    settings: {
+      nav: "Settings",
+      title: "Settings",
+      subtitle: "Local application preferences"
+    }
+  }
+};
+
+const EMPTY_COPY = {
+  pt: {
+    title: "Selecione um repositório para começar",
+    description: "Escolha uma pasta de repositório Git local para gerir worktrees e branches.",
+    action: "Selecionar Repositório"
+  },
+  en: {
+    title: "Select a repository to get started",
+    description: "Choose a local Git repository folder to manage worktrees and branches.",
+    action: "Select Repository"
+  }
+} satisfies Record<Locale, { title: string; description: string; action: string }>;
+
+const ONBOARDING_COPY = {
+  pt: {
+    title: "Primeiro arranque",
+    description: "Em menos de um minuto ficas com o workspace pronto para trabalho paralelo.",
+    action: "Selecionar repositório",
+    dismiss: "Ignorar",
+    steps: [
+      "Seleciona uma pasta Git local.",
+      "Adiciona mais repositórios à área de trabalho quando precisares.",
+      "Usa Workflows para handoff, sync e revisão com confirmação prévia."
+    ]
+  },
+  en: {
+    title: "First run",
+    description: "Get the workspace ready for parallel Git work in under a minute.",
+    action: "Select repository",
+    dismiss: "Dismiss",
+    steps: [
+      "Select a local Git folder.",
+      "Add more repositories to the workspace whenever needed.",
+      "Use Workflows for handoff, sync and review with confirmation first."
+    ]
+  }
+} satisfies Record<Locale, { title: string; description: string; action: string; dismiss: string; steps: string[] }>;
+
+const HELP_COPY = {
+  pt: {
+    introTitle: "Centro de ajuda rápido",
+    intro:
+      "Os comandos principais estão acessíveis por teclado, mouse e leitores de ecrã. A navegação mantém-se disponível mesmo quando há erros inline.",
+    shortcutsTitle: "Atalhos de teclado",
+    shortcutsSubtitle: "Referência rápida para navegação sem tirar as mãos do teclado",
+    accessibilityTitle: "Acessibilidade",
+    accessibility:
+      "Todos os controlos novos têm estados de foco visíveis, etiquetas ARIA e navegação por teclado. As mensagens de estado usam regiões live.",
+    i18nTitle: "Idioma",
+    i18n: "A base de internacionalização já suporta Português e Inglês nas páginas principais, onboarding, ajuda e preferências.",
+    shortcuts: [
+      { keys: ["Cmd", "K"], label: "Paleta de comandos", description: "Abre ações, navegação, repos e workflows." },
+      { keys: ["Ctrl", "K"], label: "Paleta de comandos", description: "Alternativa para Windows e Linux." },
+      { keys: ["↑", "↓"], label: "Navegar resultados", description: "Percorre opções dentro da paleta." },
+      { keys: ["Enter"], label: "Executar", description: "Executa a opção ativa." },
+      { keys: ["Esc"], label: "Fechar", description: "Fecha menus, modais e a paleta." },
+      { keys: ["Tab"], label: "Foco seguinte", description: "Percorre botões, filtros e campos." }
+    ]
+  },
+  en: {
+    introTitle: "Quick help center",
+    intro:
+      "Core commands are available through keyboard, mouse and screen readers. Navigation remains available even when inline errors appear.",
+    shortcutsTitle: "Keyboard shortcuts",
+    shortcutsSubtitle: "Quick reference for keyboard-first navigation",
+    accessibilityTitle: "Accessibility",
+    accessibility:
+      "New controls include visible focus states, ARIA labels and keyboard navigation. Status messages use live regions.",
+    i18nTitle: "Language",
+    i18n: "The i18n foundation already supports Portuguese and English across primary pages, onboarding, help and preferences.",
+    shortcuts: [
+      { keys: ["Cmd", "K"], label: "Command palette", description: "Open actions, navigation, repositories and workflows." },
+      { keys: ["Ctrl", "K"], label: "Command palette", description: "Alternative for Windows and Linux." },
+      { keys: ["↑", "↓"], label: "Navigate results", description: "Move through options in the palette." },
+      { keys: ["Enter"], label: "Run", description: "Run the active option." },
+      { keys: ["Esc"], label: "Close", description: "Close menus, dialogs and the palette." },
+      { keys: ["Tab"], label: "Next focus", description: "Move through buttons, filters and fields." }
+    ]
+  }
+} satisfies Record<
+  Locale,
+  {
+    introTitle: string;
+    intro: string;
+    shortcutsTitle: string;
+    shortcutsSubtitle: string;
+    accessibilityTitle: string;
+    accessibility: string;
+    i18nTitle: string;
+    i18n: string;
+    shortcuts: Array<{ keys: string[]; label: string; description: string }>;
+  }
+>;
+
+const PRIVACY_COPY = {
+  pt: {
+    heroTitle: "Nada sai da máquina sem autorização",
+    heroDescription:
+      "Worktree Manager é local-first. Repositórios, branches, worktrees, diagnósticos e preferências ficam guardados localmente. Não existe telemetria remota implementada.",
+    copyReport: "Copiar relatório local",
+    copied: "Copiado",
+    telemetryTitle: "Telemetria",
+    telemetryStatus: "Inexistente",
+    telemetryDescription:
+      "A aplicação não envia métricas, eventos, erros, nomes de repositórios, caminhos ou comandos para serviços externos.",
+    localDataTitle: "Dados locais",
+    localDataDescription: "Dados que podem ficar guardados no ficheiro local da app ou no localStorage do browser.",
+    stateFile: "Ficheiro de estado",
+    repositories: "Repositórios recentes",
+    operations: "Operações registadas",
+    preferences: "Preferências locais",
+    outboundTitle: "Ações que podem sair da máquina",
+    outboundDescription:
+      "Apenas ações iniciadas pelo utilizador, como fetch/pull contra remotos Git ou abrir ferramentas externas, podem contactar sistemas fora da app.",
+    auditTitle: "Auditoria",
+    auditDescription:
+      "Diagnósticos e relatórios são gerados localmente. Copiar JSON coloca os dados na área de transferência para tu decidires onde os partilhar.",
+    storedItems: [
+      "Lista de repositórios recentes e timestamps de abertura.",
+      "Histórico local dos últimos comandos Git executados pela app.",
+      "Preferências como tema, idioma, modo seguro e integrações.",
+      "Estado visual local: repositórios ativos, worktree em foco e onboarding dispensado."
+    ],
+    outboundItems: [
+      "Git fetch/pull comunica com os remotos configurados no teu repositório.",
+      "Abrir editor/terminal/pasta delega a ação ao sistema operativo.",
+      "Copiar diagnóstico ou relatório só escreve na área de transferência local."
+    ]
+  },
+  en: {
+    heroTitle: "Nothing leaves your machine without permission",
+    heroDescription:
+      "Worktree Manager is local-first. Repositories, branches, worktrees, diagnostics and preferences stay local. Remote telemetry is not implemented.",
+    copyReport: "Copy local report",
+    copied: "Copied",
+    telemetryTitle: "Telemetry",
+    telemetryStatus: "Not implemented",
+    telemetryDescription:
+      "The app does not send metrics, events, errors, repository names, paths or commands to external services.",
+    localDataTitle: "Local data",
+    localDataDescription: "Data that may be stored in the app state file or browser localStorage.",
+    stateFile: "State file",
+    repositories: "Recent repositories",
+    operations: "Recorded operations",
+    preferences: "Local preferences",
+    outboundTitle: "Actions that can leave the machine",
+    outboundDescription:
+      "Only user-initiated actions, such as fetch/pull against Git remotes or opening external tools, can contact systems outside the app.",
+    auditTitle: "Audit",
+    auditDescription:
+      "Diagnostics and reports are generated locally. Copying JSON places data on the clipboard so you decide where to share it.",
+    storedItems: [
+      "Recent repository list and opening timestamps.",
+      "Local history of recent Git commands run by the app.",
+      "Preferences such as theme, language, safe mode and integrations.",
+      "Local UI state: active repositories, focused worktree and dismissed onboarding."
+    ],
+    outboundItems: [
+      "Git fetch/pull communicates with remotes configured in your repository.",
+      "Opening editor/terminal/folder delegates the action to the operating system.",
+      "Copying diagnostics or reports only writes to the local clipboard."
+    ]
+  }
+} satisfies Record<
+  Locale,
+  {
+    heroTitle: string;
+    heroDescription: string;
+    copyReport: string;
+    copied: string;
+    telemetryTitle: string;
+    telemetryStatus: string;
+    telemetryDescription: string;
+    localDataTitle: string;
+    localDataDescription: string;
+    stateFile: string;
+    repositories: string;
+    operations: string;
+    preferences: string;
+    outboundTitle: string;
+    outboundDescription: string;
+    auditTitle: string;
+    auditDescription: string;
+    storedItems: string[];
+    outboundItems: string[];
+  }
+>;
+
+const SETTINGS_COPY = {
+  pt: {
+    language: "Idioma",
+    languageAria: "Escolher idioma",
+    portuguese: "Português",
+    english: "English",
+    version: "Versão"
+  },
+  en: {
+    language: "Language",
+    languageAria: "Choose language",
+    portuguese: "Português",
+    english: "English",
+    version: "Version"
+  }
+} satisfies Record<
+  Locale,
+  { language: string; languageAria: string; portuguese: string; english: string; version: string }
+>;
+
+const A11Y_COPY = {
+  pt: {
+    progress: "Ação em curso",
+    openNavigation: "Abrir navegação",
+    closeNavigation: "Fechar navegação",
+    openCommands: "Abrir comandos",
+    dismissAlert: "Dispensar erro"
+  },
+  en: {
+    progress: "Action in progress",
+    openNavigation: "Open navigation",
+    closeNavigation: "Close navigation",
+    openCommands: "Open commands",
+    dismissAlert: "Dismiss error"
+  }
+} satisfies Record<Locale, { progress: string; openNavigation: string; closeNavigation: string; openCommands: string; dismissAlert: string }>;
+
+const SHELL_COPY = {
+  pt: {
+    navigation: "Navegação",
+    workspace: "Área de trabalho",
+    activeRepository: "repositório ativo",
+    activeRepositories: "repositórios ativos",
+    addRepository: "Adicionar Repositório",
+    addRepositoryLower: "Adicionar repositório",
+    selectRepository: "Selecionar repositório",
+    commands: "Comandos"
+  },
+  en: {
+    navigation: "Navigation",
+    workspace: "Workspace",
+    activeRepository: "active repository",
+    activeRepositories: "active repositories",
+    addRepository: "Add Repository",
+    addRepositoryLower: "Add repository",
+    selectRepository: "Select repository",
+    commands: "Commands"
+  }
+} satisfies Record<
+  Locale,
+  {
+    navigation: string;
+    workspace: string;
+    activeRepository: string;
+    activeRepositories: string;
+    addRepository: string;
+    addRepositoryLower: string;
+    selectRepository: string;
+    commands: string;
+  }
+>;
 
 class AppErrorBoundary extends Component<
   { children: ReactNode },
@@ -195,12 +571,15 @@ function WorktreeManagerApp() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
   const [settings, setSettings] = useState<AppSettings>({
     safeMode: true,
+    locale: "pt",
     integrations: {
       editor: "auto",
       terminal: "auto"
     }
   });
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => readBooleanFlag(ONBOARDING_STORAGE_KEY));
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
+  const [privacyReportCopied, setPrivacyReportCopied] = useState(false);
   const [activePage, setActivePage] = useState<AppPage>(() => readPageFromHash());
   const refreshRequestId = useRef(0);
   const skipNextWorkspaceRefresh = useRef(false);
@@ -218,6 +597,15 @@ function WorktreeManagerApp() {
     [repos, workspaceRepoIds]
   );
   const selectedSummary = selectedRepoId ? repoSummaries[selectedRepoId] ?? null : null;
+  const locale = settings.locale ?? "pt";
+  const pageCopy = PAGE_COPY[locale] ?? PAGE_COPY.pt;
+  const emptyCopy = EMPTY_COPY[locale] ?? EMPTY_COPY.pt;
+  const onboardingCopy = ONBOARDING_COPY[locale] ?? ONBOARDING_COPY.pt;
+  const helpCopy = HELP_COPY[locale] ?? HELP_COPY.pt;
+  const privacyCopy = PRIVACY_COPY[locale] ?? PRIVACY_COPY.pt;
+  const settingsCopy = SETTINGS_COPY[locale] ?? SETTINGS_COPY.pt;
+  const a11yCopy = A11Y_COPY[locale] ?? A11Y_COPY.pt;
+  const shellCopy = SHELL_COPY[locale] ?? SHELL_COPY.pt;
   const selectedFocusedWorktreePath =
     (selectedRepoId ? focusedWorktreePaths[selectedRepoId] : null) ??
     selectedSummary?.focusedWorktreePath ??
@@ -353,7 +741,6 @@ function WorktreeManagerApp() {
       setWorkspaceRepoIds(initialActiveIds);
       setSelectedRepoId(initialActiveIds[0] ?? null);
       setWorkspaceHydrated(true);
-      if (!repoList.length) setDialog({ kind: "repo-picker" });
     } catch (caught) {
       const message = errorMessage(caught);
       setError(message);
@@ -562,6 +949,27 @@ function WorktreeManagerApp() {
       setError(message);
       notify({ tone: "error", title: "Configuração falhou", detail: message });
       await recordUiError("update_settings_failed", message, { safeMode });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function updateLocale(nextLocale: Locale) {
+    setActionLoading("settings");
+    setError(null);
+    try {
+      const nextSettings = await api.updateSettings({ locale: nextLocale });
+      setSettings(nextSettings);
+      setDiagnostics(await api.diagnostics());
+      notify({
+        tone: "success",
+        title: nextLocale === "pt" ? "Idioma atualizado" : "Language updated"
+      });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: "Configuração falhou", detail: message });
+      await recordUiError("update_locale_failed", message, { locale: nextLocale });
     } finally {
       setActionLoading(null);
     }
@@ -896,6 +1304,34 @@ function WorktreeManagerApp() {
     }
   }
 
+  async function copyPrivacyReport() {
+    setActionLoading("privacy-copy");
+    setError(null);
+    try {
+      const report = buildPrivacyReport({
+        diagnostics,
+        operations,
+        repos,
+        workspaceRepos,
+        settings,
+        themePreference,
+        focusedWorktreePaths,
+        onboardingDismissed
+      });
+      await writeClipboard(JSON.stringify(report, null, 2));
+      setPrivacyReportCopied(true);
+      window.setTimeout(() => setPrivacyReportCopied(false), 1800);
+      notify({ tone: "success", title: locale === "pt" ? "Relatório copiado" : "Report copied" });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: locale === "pt" ? "Cópia falhou" : "Copy failed", detail: message });
+      await recordUiError("copy_privacy_report_failed", message);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function recordUiError(name: string, message: string, context: Record<string, unknown> = {}) {
     try {
       await api.recordDiagnosticEvent({
@@ -921,16 +1357,18 @@ function WorktreeManagerApp() {
 
   const localBranches = branches.filter((branch) => !branch.isRemote);
   const navItems: Array<{ page: AppPage; label: string; icon: ReactNode }> = [
-    { page: "dashboard", label: "Dashboard", icon: <Home size={18} /> },
-    { page: "detail", label: "Detalhe", icon: <FolderGit2 size={18} /> },
-    { page: "workflows", label: "Workflows", icon: <CheckCircle2 size={18} /> },
-    { page: "worktrees", label: "Worktrees", icon: <GitFork size={18} /> },
-    { page: "branches", label: "Branches", icon: <GitBranch size={18} /> },
-    { page: "operations", label: "Operações", icon: <TerminalSquare size={18} /> },
-    { page: "integrations", label: "Integrações", icon: <Plug size={18} /> },
-    { page: "settings", label: "Configurações", icon: <Settings size={18} /> }
+    { page: "dashboard", label: pageCopy.dashboard.nav, icon: <Home size={18} /> },
+    { page: "detail", label: pageCopy.detail.nav, icon: <FolderGit2 size={18} /> },
+    { page: "workflows", label: pageCopy.workflows.nav, icon: <CheckCircle2 size={18} /> },
+    { page: "worktrees", label: pageCopy.worktrees.nav, icon: <GitFork size={18} /> },
+    { page: "branches", label: pageCopy.branches.nav, icon: <GitBranch size={18} /> },
+    { page: "operations", label: pageCopy.operations.nav, icon: <TerminalSquare size={18} /> },
+    { page: "integrations", label: pageCopy.integrations.nav, icon: <Plug size={18} /> },
+    { page: "privacy", label: pageCopy.privacy.nav, icon: <Shield size={18} /> },
+    { page: "help", label: pageCopy.help.nav, icon: <HelpCircle size={18} /> },
+    { page: "settings", label: pageCopy.settings.nav, icon: <Settings size={18} /> }
   ];
-  const pageMeta = getPageMeta(activePage);
+  const pageMeta = pageCopy[activePage];
   const guidedWorkflows = buildGuidedWorkflows();
   const commandActions = buildCommandActions();
 
@@ -945,6 +1383,11 @@ function WorktreeManagerApp() {
   function runCommandAction(action: CommandPaletteAction) {
     setCommandPaletteOpen(false);
     window.setTimeout(action.run, 0);
+  }
+
+  function dismissOnboarding() {
+    setOnboardingDismissed(true);
+    persistBooleanFlag(ONBOARDING_STORAGE_KEY, true);
   }
 
   function openGuidedWorkflow(workflowId: GuidedWorkflowId) {
@@ -1145,7 +1588,7 @@ function WorktreeManagerApp() {
     const actions: CommandPaletteAction[] = navItems.map((item) => ({
       id: `page:${item.page}`,
       title: `Ir para ${item.label}`,
-      subtitle: getPageMeta(item.page).subtitle,
+      subtitle: getPageMeta(item.page, locale).subtitle,
       section: "Navegação",
       keywords: [item.page, item.label],
       shortcut: item.page === activePage ? "Atual" : undefined,
@@ -1471,7 +1914,13 @@ function WorktreeManagerApp() {
 
   function renderWorkflowsPage() {
     if (!workspaceRepos.length) {
-      return <EmptyState loading={loading} onSelectRepo={() => setDialog({ kind: "repo-picker" })} />;
+      return (
+        <EmptyState
+          loading={loading}
+          copy={emptyCopy}
+          onSelectRepo={() => setDialog({ kind: "repo-picker" })}
+        />
+      );
     }
 
     return (
@@ -1530,6 +1979,7 @@ function WorktreeManagerApp() {
             worktrees={worktrees}
             localWorkspacePath={selectedRepo.path}
             onInspect={openWorktreeDetail}
+            onCreate={() => setDialog({ kind: "create-worktree" })}
             onHandoffLocal={confirmHandoffWorktreeToLocal}
             onMoveLocalToWorktree={confirmMoveLocalBranchToWorktree}
             onOpen={openExternalPath}
@@ -1571,6 +2021,7 @@ function WorktreeManagerApp() {
         >
           <BranchTable
             branches={branches}
+            onCreate={() => setDialog({ kind: "create-branch" })}
             onCheckout={confirmBranchCheckout}
             onDelete={(branch) => setDialog({ kind: "delete-branch", branch })}
           />
@@ -1592,7 +2043,7 @@ function WorktreeManagerApp() {
           </button>
         }
       >
-        <OperationsTable operations={operations} />
+        <OperationsTable operations={operations} onRefresh={() => void refreshOperations()} />
       </DashboardSection>
     );
   }
@@ -1638,10 +2089,18 @@ function WorktreeManagerApp() {
 
   function renderSettingsPage() {
     return (
-      <DashboardSection id="settings" title="Configurações" subtitle="Preferências locais">
+      <DashboardSection id="settings" title={pageCopy.settings.title} subtitle={pageCopy.settings.subtitle}>
         <div className="settings-grid">
           <div className="settings-item">
             <ThemeControl value={themePreference} onChange={setThemePreference} />
+          </div>
+          <div className="settings-item">
+            <LanguageControl
+              value={locale}
+              busy={actionLoading === "settings"}
+              copy={settingsCopy}
+              onChange={(nextLocale) => void updateLocale(nextLocale)}
+            />
           </div>
           <div className="settings-item">
             <SafeModeControl
@@ -1651,7 +2110,7 @@ function WorktreeManagerApp() {
             />
           </div>
           <div className="settings-item">
-            <span className="settings-label">Versão</span>
+            <span className="settings-label">{settingsCopy.version}</span>
             <strong>v1.0.0</strong>
           </div>
         </div>
@@ -1666,14 +2125,51 @@ function WorktreeManagerApp() {
     );
   }
 
+  function renderHelpPage() {
+    return <HelpPage copy={helpCopy} />;
+  }
+
+  function renderPrivacyPage() {
+    return (
+      <PrivacyPage
+        copy={privacyCopy}
+        diagnostics={diagnostics}
+        operations={operations}
+        repos={repos}
+        workspaceRepos={workspaceRepos}
+        settings={settings}
+        copied={privacyReportCopied}
+        busy={actionLoading === "privacy-copy"}
+        onCopyReport={() => void copyPrivacyReport()}
+      />
+    );
+  }
+
   function renderPageContent() {
     if (!workspaceHydrated && loading) return <DashboardSkeleton />;
+    if (activePage === "help") return renderHelpPage();
+    if (activePage === "privacy") return renderPrivacyPage();
     if (activePage === "settings") return renderSettingsPage();
     if (activePage === "integrations") return renderIntegrationsPage();
     if (activePage === "operations") return renderOperationsPage();
 
     if (!workspaceRepos.length) {
-      return <EmptyState loading={loading} onSelectRepo={() => setDialog({ kind: "repo-picker" })} />;
+      return (
+        <>
+          <EmptyState
+            loading={loading}
+            copy={emptyCopy}
+            onSelectRepo={() => setDialog({ kind: "repo-picker" })}
+          />
+          {!onboardingDismissed ? (
+            <OnboardingPanel
+              copy={onboardingCopy}
+              onDismiss={dismissOnboarding}
+              onSelectRepo={() => setDialog({ kind: "repo-picker" })}
+            />
+          ) : null}
+        </>
+      );
     }
 
     if (activePage === "detail") return renderDetailPage();
@@ -1710,7 +2206,9 @@ function WorktreeManagerApp() {
 
   return (
     <div className="app-shell">
-      {loading || actionLoading || detailLoading ? <div className="app-progress" /> : null}
+      {loading || actionLoading || detailLoading ? (
+        <div className="app-progress" role="progressbar" aria-label={a11yCopy.progress} />
+      ) : null}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
 
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
@@ -1719,8 +2217,8 @@ function WorktreeManagerApp() {
           <span>Worktree Manager</span>
         </div>
 
-        <nav className="nav-stack" aria-label="Navegação">
-          <span className="nav-label">Navegação</span>
+        <nav className="nav-stack" aria-label={shellCopy.navigation}>
+          <span className="nav-label">{shellCopy.navigation}</span>
           {navItems.map((item) => (
             <button
               key={item.page}
@@ -1736,13 +2234,16 @@ function WorktreeManagerApp() {
         </nav>
 
         <div className="repo-card">
-          <span className="nav-label">Área de trabalho</span>
+          <span className="nav-label">{shellCopy.workspace}</span>
           {workspaceRepos.length ? (
             <>
               <div className="repo-current">
                 <span className="status-dot" />
                 <div>
-                  <span>{workspaceRepos.length} repositório{workspaceRepos.length === 1 ? "" : "s"} ativo{workspaceRepos.length === 1 ? "" : "s"}</span>
+                  <span>
+                    {workspaceRepos.length}{" "}
+                    {workspaceRepos.length === 1 ? shellCopy.activeRepository : shellCopy.activeRepositories}
+                  </span>
                   <strong>{selectedRepo?.name ?? workspaceRepos[0]?.name}</strong>
                 </div>
               </div>
@@ -1760,12 +2261,12 @@ function WorktreeManagerApp() {
                 ))}
               </div>
               <button className="ghost-button full" onClick={() => setDialog({ kind: "repo-picker" })}>
-                Adicionar repositório
+                {shellCopy.addRepositoryLower}
               </button>
             </>
           ) : (
             <button className="ghost-button full" onClick={() => setDialog({ kind: "repo-picker" })}>
-              Selecionar repositório
+              {shellCopy.selectRepository}
             </button>
           )}
         </div>
@@ -1778,7 +2279,13 @@ function WorktreeManagerApp() {
 
       <main className="main-area" id={activePage}>
         <header className="topbar">
-          <button className="icon-button mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}>
+          <button
+            className="icon-button mobile-menu"
+            type="button"
+            aria-expanded={sidebarOpen}
+            aria-label={sidebarOpen ? a11yCopy.closeNavigation : a11yCopy.openNavigation}
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
             {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
           <div>
@@ -1786,22 +2293,27 @@ function WorktreeManagerApp() {
             <p>{pageMeta.subtitle}</p>
           </div>
           <div className="topbar-actions">
-            <button className="command-trigger" type="button" onClick={() => setCommandPaletteOpen(true)}>
+            <button
+              className="command-trigger"
+              type="button"
+              aria-label={a11yCopy.openCommands}
+              onClick={() => setCommandPaletteOpen(true)}
+            >
               <CommandIcon size={17} />
-              <span>Comandos</span>
+              <span>{shellCopy.commands}</span>
             </button>
             <button className="primary-button" onClick={() => setDialog({ kind: "repo-picker" })}>
               <Folder size={18} />
-              Adicionar Repositório
+              {shellCopy.addRepository}
             </button>
           </div>
         </header>
 
         {error ? (
-          <div className="alert">
+          <div className="alert" role="alert">
             <AlertTriangle size={18} />
             <span>{error}</span>
-            <button className="icon-button compact" onClick={() => setError(null)}>
+            <button className="icon-button compact" type="button" aria-label={a11yCopy.dismissAlert} onClick={() => setError(null)}>
               <X size={16} />
             </button>
           </div>
@@ -1985,7 +2497,7 @@ function ToastViewport({
   onDismiss: (id: string) => void;
 }) {
   return (
-    <div className="toast-viewport" aria-live="polite" aria-relevant="additions">
+    <div className="toast-viewport" role="status" aria-live="polite" aria-relevant="additions">
       {toasts.map((toast) => (
         <div key={toast.id} className={`toast ${toast.tone}`}>
           <div className="toast-icon">
@@ -2752,10 +3264,49 @@ function TableFilters({
   );
 }
 
+function ActionEmptyState({
+  icon,
+  title,
+  description,
+  primaryLabel,
+  onPrimary,
+  secondaryLabel,
+  onSecondary
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  primaryLabel: string;
+  onPrimary: () => void;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+}) {
+  return (
+    <div className="action-empty-state">
+      <div className="action-empty-icon">{icon}</div>
+      <div className="action-empty-copy">
+        <h3>{title}</h3>
+        <p>{description}</p>
+      </div>
+      <div className="action-empty-actions">
+        <button className="primary-button" type="button" onClick={onPrimary}>
+          {primaryLabel}
+        </button>
+        {secondaryLabel && onSecondary ? (
+          <button className="secondary-button" type="button" onClick={onSecondary}>
+            {secondaryLabel}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function WorktreeTable({
   worktrees,
   localWorkspacePath,
   onInspect,
+  onCreate,
   onHandoffLocal,
   onMoveLocalToWorktree,
   onOpen,
@@ -2765,6 +3316,7 @@ function WorktreeTable({
   worktrees: WorktreeRecord[];
   localWorkspacePath: string;
   onInspect: (worktree: WorktreeRecord) => void;
+  onCreate: () => void;
   onHandoffLocal: (worktree: WorktreeRecord) => void;
   onMoveLocalToWorktree: () => void;
   onOpen: (path: string, target: OpenTarget) => void;
@@ -2889,7 +3441,22 @@ function WorktreeTable({
           </table>
         </div>
       ) : (
-        <p className="empty-copy">Sem worktrees para os filtros atuais.</p>
+        <ActionEmptyState
+          icon={<GitFork size={20} />}
+          title={worktrees.length ? "Sem worktrees para os filtros atuais" : "Ainda não existem worktrees"}
+          description={
+            worktrees.length
+              ? "Ajusta a pesquisa ou limpa os filtros para voltar à lista completa."
+              : "Cria uma worktree para trabalhar numa branch em paralelo sem mexer no workspace local."
+          }
+          primaryLabel="Nova Worktree"
+          onPrimary={onCreate}
+          secondaryLabel={worktrees.length ? "Limpar filtros" : undefined}
+          onSecondary={() => {
+            setQuery("");
+            setFilter("all");
+          }}
+        />
       )}
       <p className="table-foot">
         Mostrando {filteredWorktrees.length} de {worktrees.length} worktrees
@@ -2900,10 +3467,12 @@ function WorktreeTable({
 
 function BranchTable({
   branches,
+  onCreate,
   onCheckout,
   onDelete
 }: {
   branches: BranchRecord[];
+  onCreate: () => void;
   onCheckout: (branch: BranchRecord) => void;
   onDelete: (branch: BranchRecord) => void;
 }) {
@@ -3005,7 +3574,22 @@ function BranchTable({
           </table>
         </div>
       ) : (
-        <p className="empty-copy">Sem branches para os filtros atuais.</p>
+        <ActionEmptyState
+          icon={<GitBranch size={20} />}
+          title={branches.length ? "Sem branches para os filtros atuais" : "Ainda não existem branches locais"}
+          description={
+            branches.length
+              ? "A pesquisa ou filtro atual não encontrou branches."
+              : "Cria uma branch local para iniciar trabalho isolado ou preparar uma nova worktree."
+          }
+          primaryLabel="Nova Branch"
+          onPrimary={onCreate}
+          secondaryLabel={branches.length ? "Limpar filtros" : undefined}
+          onSecondary={() => {
+            setQuery("");
+            setFilter("all");
+          }}
+        />
       )}
       <p className="table-foot">
         Mostrando {filteredBranches.length} de {branches.length} branches
@@ -3014,7 +3598,13 @@ function BranchTable({
   );
 }
 
-function OperationsTable({ operations }: { operations: OperationRecord[] }) {
+function OperationsTable({
+  operations,
+  onRefresh
+}: {
+  operations: OperationRecord[];
+  onRefresh: () => void;
+}) {
   const [expandedOperationId, setExpandedOperationId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<OperationFilter>("all");
@@ -3038,7 +3628,15 @@ function OperationsTable({ operations }: { operations: OperationRecord[] }) {
   );
 
   if (!operations.length) {
-    return <p className="empty-copy">Ainda não há operações registadas.</p>;
+    return (
+      <ActionEmptyState
+        icon={<TerminalSquare size={20} />}
+        title="Ainda não há operações registadas"
+        description="Executa uma ação Git ou atualiza o dashboard para popular o histórico local."
+        primaryLabel="Atualizar"
+        onPrimary={onRefresh}
+      />
+    );
   }
 
   return (
@@ -3119,7 +3717,18 @@ function OperationsTable({ operations }: { operations: OperationRecord[] }) {
           </table>
         </div>
       ) : (
-        <p className="empty-copy">Sem operações para os filtros atuais.</p>
+        <ActionEmptyState
+          icon={<TerminalSquare size={20} />}
+          title="Sem operações para os filtros atuais"
+          description="Ajusta a pesquisa ou limpa os filtros para consultar o histórico completo."
+          primaryLabel="Limpar filtros"
+          onPrimary={() => {
+            setQuery("");
+            setFilter("all");
+          }}
+          secondaryLabel="Atualizar"
+          onSecondary={onRefresh}
+        />
       )}
       <p className="table-foot">
         Mostrando {Math.min(filteredOperations.length, 24)} de {operations.length} operações
@@ -3268,6 +3877,7 @@ function RowActions({
         ref={buttonRef}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label="Abrir menu de ações"
         className="icon-button compact"
         title="Ações"
         type="button"
@@ -3371,6 +3981,45 @@ function SafeModeControl({
             onClick={() => onChange(option.value)}
           >
             {option.icon}
+            <span>{option.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LanguageControl({
+  value,
+  busy,
+  copy,
+  onChange
+}: {
+  value: Locale;
+  busy: boolean;
+  copy: (typeof SETTINGS_COPY)[Locale];
+  onChange: (value: Locale) => void;
+}) {
+  const options: Array<{ value: Locale; label: string }> = [
+    { value: "pt", label: copy.portuguese },
+    { value: "en", label: copy.english }
+  ];
+
+  return (
+    <div className="settings-control" aria-label={copy.language}>
+      <span>{copy.language}</span>
+      <div className="settings-segmented two" role="group" aria-label={copy.languageAria}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            aria-pressed={value === option.value}
+            className={value === option.value ? "active" : ""}
+            disabled={busy}
+            title={option.label}
+            type="button"
+            onClick={() => onChange(option.value)}
+          >
+            <Languages size={15} />
             <span>{option.label}</span>
           </button>
         ))}
@@ -3569,6 +4218,176 @@ function IntegrationGroup<TId extends string>({
   );
 }
 
+function PrivacyPage({
+  copy,
+  diagnostics,
+  operations,
+  repos,
+  workspaceRepos,
+  settings,
+  copied,
+  busy,
+  onCopyReport
+}: {
+  copy: (typeof PRIVACY_COPY)[Locale];
+  diagnostics: DiagnosticsSnapshot | null;
+  operations: OperationRecord[];
+  repos: RepoRecord[];
+  workspaceRepos: RepoRecord[];
+  settings: AppSettings;
+  copied: boolean;
+  busy: boolean;
+  onCopyReport: () => void;
+}) {
+  return (
+    <div className="privacy-layout">
+      <section className="privacy-hero">
+        <div className="privacy-hero-copy">
+          <div className="hero-icon compact-icon">
+            <ShieldCheck size={24} />
+          </div>
+          <div>
+            <h2>{copy.heroTitle}</h2>
+            <p>{copy.heroDescription}</p>
+          </div>
+        </div>
+        <button className="primary-button" disabled={busy} type="button" onClick={onCopyReport}>
+          {busy ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}
+          {copied ? copy.copied : copy.copyReport}
+        </button>
+      </section>
+
+      <div className="privacy-grid">
+        <article className="privacy-card">
+          <div className="privacy-card-header">
+            <EyeOff size={20} />
+            <div>
+              <span className="settings-label">{copy.telemetryTitle}</span>
+              <h3>{copy.telemetryStatus}</h3>
+            </div>
+          </div>
+          <p>{copy.telemetryDescription}</p>
+          <span className="badge green">Local-only</span>
+        </article>
+
+        <article className="privacy-card">
+          <div className="privacy-card-header">
+            <Database size={20} />
+            <div>
+              <span className="settings-label">{copy.localDataTitle}</span>
+              <h3>{diagnostics?.statePath ? basename(diagnostics.statePath) : "-"}</h3>
+            </div>
+          </div>
+          <p>{copy.localDataDescription}</p>
+          <div className="privacy-metric-grid">
+            <div>
+              <span>{copy.repositories}</span>
+              <strong>{repos.length}</strong>
+            </div>
+            <div>
+              <span>{copy.operations}</span>
+              <strong>{operations.length}</strong>
+            </div>
+            <div>
+              <span>{copy.preferences}</span>
+              <strong>{settings.safeMode ? "Safe" : "Manual"}</strong>
+            </div>
+          </div>
+          <code title={diagnostics?.statePath ?? undefined}>{diagnostics?.statePath ?? "-"}</code>
+        </article>
+      </div>
+
+      <div className="privacy-grid">
+        <DashboardSection id="privacy-stored-data" title={copy.localDataTitle} subtitle={copy.localDataDescription}>
+          <ul className="privacy-list">
+            {copy.storedItems.map((item) => (
+              <li key={item}>
+                <CheckCircle2 size={16} />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </DashboardSection>
+
+        <DashboardSection id="privacy-outbound-actions" title={copy.outboundTitle} subtitle={copy.outboundDescription}>
+          <ul className="privacy-list">
+            {copy.outboundItems.map((item) => (
+              <li key={item}>
+                <AlertTriangle size={16} />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </DashboardSection>
+      </div>
+
+      <DashboardSection id="privacy-audit" title={copy.auditTitle} subtitle={copy.auditDescription}>
+        <div className="privacy-audit-grid">
+          <div>
+            <span className="settings-label">{copy.stateFile}</span>
+            <code>{diagnostics?.statePath ?? "-"}</code>
+          </div>
+          <div>
+            <span className="settings-label">{copy.repositories}</span>
+            <strong>{workspaceRepos.length} / {repos.length}</strong>
+          </div>
+          <div>
+            <span className="settings-label">{copy.operations}</span>
+            <strong>{operations.length}</strong>
+          </div>
+          <div>
+            <span className="settings-label">{copy.telemetryTitle}</span>
+            <strong>{copy.telemetryStatus}</strong>
+          </div>
+        </div>
+      </DashboardSection>
+    </div>
+  );
+}
+
+function HelpPage({ copy }: { copy: (typeof HELP_COPY)[Locale] }) {
+  return (
+    <div className="help-layout">
+      <DashboardSection id="help-intro" title={copy.introTitle} subtitle={copy.intro}>
+        <div className="help-callouts">
+          <article>
+            <HelpCircle size={20} />
+            <div>
+              <h3>{copy.accessibilityTitle}</h3>
+              <p>{copy.accessibility}</p>
+            </div>
+          </article>
+          <article>
+            <Languages size={20} />
+            <div>
+              <h3>{copy.i18nTitle}</h3>
+              <p>{copy.i18n}</p>
+            </div>
+          </article>
+        </div>
+      </DashboardSection>
+
+      <DashboardSection id="keyboard-shortcuts" title={copy.shortcutsTitle} subtitle={copy.shortcutsSubtitle}>
+        <div className="shortcut-grid">
+          {copy.shortcuts.map((shortcut) => (
+            <article key={`${shortcut.label}-${shortcut.keys.join("-")}`} className="shortcut-card">
+              <div className="shortcut-keys" aria-label={shortcut.keys.join(" + ")}>
+                {shortcut.keys.map((key) => (
+                  <kbd key={key}>{key}</kbd>
+                ))}
+              </div>
+              <div>
+                <h3>{shortcut.label}</h3>
+                <p>{shortcut.description}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </DashboardSection>
+    </div>
+  );
+}
+
 function CommandPalette({
   actions,
   busy,
@@ -3581,6 +4400,7 @@ function CommandPalette({
   onRun: (action: CommandPaletteAction) => void;
 }) {
   const titleId = useId();
+  const listboxId = useId();
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -3588,6 +4408,7 @@ function CommandPalette({
   const visibleActions = useMemo(() => filterCommandActions(actions, query), [actions, query]);
   const groups = useMemo(() => groupCommandActions(visibleActions), [visibleActions]);
   const activeAction = visibleActions[activeIndex] ?? null;
+  const activeOptionId = activeAction ? commandOptionId(activeAction.id) : undefined;
 
   useEffect(() => {
     const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -3658,12 +4479,14 @@ function CommandPalette({
           <input
             ref={inputRef}
             aria-label="Pesquisar comandos"
+            aria-controls={listboxId}
+            aria-activedescendant={activeOptionId}
             value={query}
             placeholder="Pesquisar comandos, repositórios, worktrees ou branches"
             onChange={(event) => setQuery(event.target.value)}
           />
           {busy ? <Loader2 className="spin" size={16} /> : null}
-          <button className="icon-button compact" type="button" onClick={onClose}>
+          <button className="icon-button compact" type="button" aria-label="Fechar comandos" onClick={onClose}>
             <X size={16} />
           </button>
         </div>
@@ -3672,7 +4495,7 @@ function CommandPalette({
           Paleta de comandos
         </h2>
 
-        <div className="command-results" role="listbox" aria-label="Comandos">
+        <div id={listboxId} className="command-results" role="listbox" aria-label="Comandos">
           {visibleActions.length ? (
             groups.map((group) => (
               <div key={group.section} className="command-group">
@@ -3680,6 +4503,7 @@ function CommandPalette({
                 {group.items.map(({ action, index }) => (
                   <button
                     key={action.id}
+                    id={commandOptionId(action.id)}
                     className={index === activeIndex ? "command-item active" : "command-item"}
                     type="button"
                     role="option"
@@ -4181,18 +5005,64 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function EmptyState({ loading, onSelectRepo }: { loading: boolean; onSelectRepo: () => void }) {
+function OnboardingPanel({
+  copy,
+  onDismiss,
+  onSelectRepo
+}: {
+  copy: (typeof ONBOARDING_COPY)[Locale];
+  onDismiss: () => void;
+  onSelectRepo: () => void;
+}) {
+  return (
+    <section className="onboarding-panel" aria-labelledby="onboarding-title">
+      <div className="onboarding-heading">
+        <div className="hero-icon compact-icon">
+          <CheckCircle2 size={24} />
+        </div>
+        <div>
+          <h2 id="onboarding-title">{copy.title}</h2>
+          <p>{copy.description}</p>
+        </div>
+      </div>
+      <ol className="onboarding-steps">
+        {copy.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <div className="onboarding-actions">
+        <button className="primary-button" type="button" onClick={onSelectRepo}>
+          <Folder size={16} />
+          {copy.action}
+        </button>
+        <button className="secondary-button" type="button" onClick={onDismiss}>
+          {copy.dismiss}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function EmptyState({
+  loading,
+  copy,
+  onSelectRepo
+}: {
+  loading: boolean;
+  copy: (typeof EMPTY_COPY)[Locale];
+  onSelectRepo: () => void;
+}) {
   return (
     <section className="empty-state">
       <div className="hero-icon">
         {loading ? <Loader2 className="spin" size={32} /> : <Folder size={34} />}
       </div>
       <div>
-        <h2>Selecione um repositório para começar</h2>
-        <p>Escolha uma pasta de repositório Git local para gerir worktrees e branches.</p>
+        <h2>{copy.title}</h2>
+        <p>{copy.description}</p>
       </div>
-      <button className="primary-button" onClick={onSelectRepo}>
-        Selecionar Repositório
+      <button className="primary-button" type="button" onClick={onSelectRepo}>
+        {copy.action}
       </button>
     </section>
   );
@@ -4253,6 +5123,68 @@ function groupCommandActions(actions: CommandPaletteAction[]) {
     group.items.push({ action, index });
   });
   return groups;
+}
+
+function commandOptionId(id: string) {
+  return `command-option-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function buildPrivacyReport({
+  diagnostics,
+  operations,
+  repos,
+  workspaceRepos,
+  settings,
+  themePreference,
+  focusedWorktreePaths,
+  onboardingDismissed
+}: {
+  diagnostics: DiagnosticsSnapshot | null;
+  operations: OperationRecord[];
+  repos: RepoRecord[];
+  workspaceRepos: RepoRecord[];
+  settings: AppSettings;
+  themePreference: ThemePreference;
+  focusedWorktreePaths: FocusedWorktreeMap;
+  onboardingDismissed: boolean;
+}) {
+  return {
+    generatedAt: new Date().toISOString(),
+    product: "Worktree Manager",
+    privacyModel: {
+      localFirst: true,
+      remoteTelemetryImplemented: false,
+      telemetryDefault: "off",
+      automaticDataUpload: false,
+      userControlledExports: ["copy diagnostics JSON", "copy privacy report"]
+    },
+    localStorageKeys: [
+      ACTIVE_REPOS_STORAGE_KEY,
+      FOCUSED_WORKTREES_STORAGE_KEY,
+      THEME_STORAGE_KEY,
+      ONBOARDING_STORAGE_KEY
+    ],
+    localState: {
+      statePath: diagnostics?.statePath ?? null,
+      recentRepositories: repos.length,
+      activeRepositories: workspaceRepos.length,
+      recordedOperations: operations.length,
+      recentFailures: diagnostics?.recentFailures.length ?? 0
+    },
+    preferences: {
+      safeMode: settings.safeMode,
+      locale: settings.locale,
+      themePreference,
+      integrations: settings.integrations,
+      onboardingDismissed
+    },
+    focusedWorktreePaths,
+    outboundActions: [
+      "Git fetch/pull communicates with remotes configured by the repository when the user runs those actions.",
+      "Opening folders, editors or terminals delegates to the local operating system.",
+      "Clipboard copy actions keep data local unless the user pastes it elsewhere."
+    ]
+  };
 }
 
 function normalizeCommandText(value: string) {
@@ -4326,43 +5258,8 @@ function isBaseBranch(branch: string) {
   return branch === "main" || branch === "master";
 }
 
-function getPageMeta(page: AppPage) {
-  const meta: Record<AppPage, { title: string; subtitle: string }> = {
-    dashboard: {
-      title: "Dashboard",
-      subtitle: "Visão geral da área de trabalho e do repositório em foco"
-    },
-    detail: {
-      title: "Detalhe",
-      subtitle: "Estado Git da worktree selecionada"
-    },
-    workflows: {
-      title: "Workflows",
-      subtitle: "Operações guiadas para trabalho em paralelo"
-    },
-    worktrees: {
-      title: "Worktrees",
-      subtitle: "Gerir worktrees do repositório em foco"
-    },
-    branches: {
-      title: "Branches",
-      subtitle: "Gerir branches e sincronização Git"
-    },
-    operations: {
-      title: "Operações",
-      subtitle: "Histórico local dos comandos Git"
-    },
-    integrations: {
-      title: "Integrações",
-      subtitle: "Editor, terminal e ferramentas externas"
-    },
-    settings: {
-      title: "Configurações",
-      subtitle: "Preferências locais da aplicação"
-    }
-  };
-
-  return meta[page];
+function getPageMeta(page: AppPage, locale: Locale = "pt") {
+  return (PAGE_COPY[locale] ?? PAGE_COPY.pt)[page];
 }
 
 function readPageFromHash(): AppPage {
@@ -4379,6 +5276,8 @@ function isAppPage(value: unknown): value is AppPage {
     value === "branches" ||
     value === "operations" ||
     value === "integrations" ||
+    value === "privacy" ||
+    value === "help" ||
     value === "settings"
   );
 }
@@ -4429,6 +5328,22 @@ function persistThemePreference(theme: ThemePreference) {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
     // Browsers can disable storage; the current theme still applies for the session.
+  }
+}
+
+function readBooleanFlag(key: string) {
+  try {
+    return window.localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistBooleanFlag(key: string, value: boolean) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Browsers can disable storage; the current session still reflects the choice.
   }
 }
 

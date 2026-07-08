@@ -79,6 +79,7 @@ describe("api", () => {
   it("persists safe mode settings", async () => {
     await expect(store.getSettings()).resolves.toEqual({
       safeMode: true,
+      locale: "pt",
       integrations: {
         editor: "auto",
         terminal: "auto"
@@ -87,12 +88,14 @@ describe("api", () => {
 
     await expect(store.updateSettings({
       safeMode: false,
+      locale: "en",
       integrations: {
         editor: "cursor",
         terminal: "iterm"
       }
     })).resolves.toEqual({
       safeMode: false,
+      locale: "en",
       integrations: {
         editor: "cursor",
         terminal: "iterm"
@@ -102,6 +105,7 @@ describe("api", () => {
     const reloadedStore = new AppStore(path.join(tmpDir, "state.json"));
     await expect(reloadedStore.getSettings()).resolves.toEqual({
       safeMode: false,
+      locale: "en",
       integrations: {
         editor: "cursor",
         terminal: "iterm"
@@ -362,6 +366,7 @@ describe("api", () => {
     expect(
       buildOpenCommand("/tmp/repo", "editor", "darwin", {}, {
         safeMode: true,
+        locale: "pt",
         integrations: {
           editor: "cursor",
           terminal: "auto"
@@ -374,6 +379,7 @@ describe("api", () => {
     expect(
       buildOpenCommand("/tmp/repo", "terminal", "darwin", {}, {
         safeMode: true,
+        locale: "pt",
         integrations: {
           editor: "auto",
           terminal: "iterm"

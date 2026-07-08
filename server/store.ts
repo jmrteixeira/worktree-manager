@@ -15,6 +15,7 @@ const defaultState: AppState = {
   operations: [],
   settings: {
     safeMode: true,
+    locale: "pt",
     integrations: {
       editor: "auto",
       terminal: "auto"
@@ -161,6 +162,7 @@ function normalizeSettings(value: unknown): AppSettings {
   const settings = value as Partial<AppSettings> | null;
   return {
     safeMode: typeof settings?.safeMode === "boolean" ? settings.safeMode : true,
+    locale: isLocale(settings?.locale) ? settings.locale : "pt",
     integrations: {
       editor: isEditorIntegration(settings?.integrations?.editor)
         ? settings.integrations.editor
@@ -170,6 +172,10 @@ function normalizeSettings(value: unknown): AppSettings {
         : "auto"
     }
   };
+}
+
+function isLocale(value: unknown): value is AppSettings["locale"] {
+  return value === "pt" || value === "en";
 }
 
 function isEditorIntegration(value: unknown): value is AppSettings["integrations"]["editor"] {

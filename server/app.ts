@@ -474,13 +474,22 @@ function settingsFromBody(body: unknown): Partial<AppSettings> {
   if (safeMode !== undefined && typeof safeMode !== "boolean") {
     throw new Error("Valor inválido para modo seguro.");
   }
+  const locale = payload?.locale;
+  if (locale !== undefined && !isLocale(locale)) {
+    throw new Error("Idioma inválido.");
+  }
 
   const integrations = integrationsFromBody(payload?.integrations);
 
   return {
     ...(typeof safeMode === "boolean" ? { safeMode } : {}),
+    ...(isLocale(locale) ? { locale } : {}),
     ...(integrations ? { integrations } : {})
   };
+}
+
+function isLocale(value: unknown): value is AppSettings["locale"] {
+  return value === "pt" || value === "en";
 }
 
 function integrationsFromBody(value: unknown): AppIntegrations | null {

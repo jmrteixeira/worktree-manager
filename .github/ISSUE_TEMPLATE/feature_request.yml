@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a workflow, integration, or product improvement.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is hard or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Worktree Manager do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: How do you solve this today?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Git correctness
+        - Worktree workflow
+        - Branch workflow
+        - Desktop distribution
+        - UI/UX
+        - Accessibility
+        - Integrations
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive
+    attributes:
+      label: Sensitive operation?
+      options:
+        - label: This feature can move, delete, checkout, stash, reset, or otherwise modify Git state.

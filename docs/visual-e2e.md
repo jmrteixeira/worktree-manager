@@ -9,6 +9,8 @@ Use `?visual=1` para correr a aplicação com dados estáveis e independentes de
 - Worktrees: `http://localhost:5173/?visual=1#worktrees`
 - Branches: `http://localhost:5173/?visual=1#branches`
 - Operações: `http://localhost:5173/?visual=1#operations`
+- Ajuda: `http://localhost:5173/?visual=1#help`
+- Dados e privacidade: `http://localhost:5173/?visual=1#privacy`
 - Configurações: `http://localhost:5173/?visual=1#settings`
 
 ## Viewports
@@ -38,6 +40,8 @@ Artefactos usados nesta validação:
 - `detail-desktop.png`
 - `branches-desktop.png`
 - `operations-expanded-desktop.png`
+- `help-desktop.png`
+- `privacy-desktop.png`
 - `settings-light-desktop.png`
 - `dashboard-mobile.png`
 - `worktrees-mobile.png`

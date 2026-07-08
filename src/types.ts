@@ -156,8 +156,11 @@ export type AppIntegrations = {
   terminal: TerminalIntegrationId;
 };
 
+export type Locale = "pt" | "en";
+
 export type AppSettings = {
   safeMode: boolean;
+  locale: Locale;
   integrations: AppIntegrations;
 };
 

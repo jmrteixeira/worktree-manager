@@ -36,6 +36,7 @@ const mockedApi = vi.mocked(api);
 
 const defaultSettings = {
   safeMode: true,
+  locale: "pt" as const,
   integrations: {
     editor: "auto" as const,
     terminal: "auto" as const
@@ -168,6 +169,60 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("Selecione um repositório para começar")).toBeInTheDocument();
+    expect(screen.getByText("Primeiro arranque")).toBeInTheDocument();
+    expect(screen.getByText("Seleciona uma pasta Git local.")).toBeInTheDocument();
+  });
+
+  it("dismisses the first-run onboarding panel", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(await screen.findByText("Primeiro arranque")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Ignorar" }));
+
+    expect(screen.queryByText("Primeiro arranque")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("worktree-manager.onboardingDismissed")).toBe("true");
+  });
+
+  it("shows visible keyboard shortcuts on the help page", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ajuda" }));
+
+    expect(await screen.findByText("Atalhos de teclado")).toBeInTheDocument();
+    expect(screen.getAllByText("Paleta de comandos").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Navegar resultados")).toBeInTheDocument();
+  });
+
+  it("shows local-first privacy details and copies a local report", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dados e privacidade" }));
+
+    expect(await screen.findByText("Nada sai da máquina sem autorização")).toBeInTheDocument();
+    expect(screen.getAllByText("Inexistente").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("A aplicação não envia métricas, eventos, erros, nomes de repositórios, caminhos ou comandos para serviços externos.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copiar relatório local" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const report = JSON.parse(writeText.mock.calls[0][0] as string) as {
+      privacyModel: { remoteTelemetryImplemented: boolean; automaticDataUpload: boolean };
+      localStorageKeys: string[];
+    };
+    expect(report.privacyModel.remoteTelemetryImplemented).toBe(false);
+    expect(report.privacyModel.automaticDataUpload).toBe(false);
+    expect(report.localStorageKeys).toContain("worktree-manager.activeRepoIds");
   });
 
   it("renders dashboard data for a selected repository", async () => {
@@ -251,7 +306,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Pesquisar worktrees"), {
       target: { value: "sem-resultados" }
     });
-    expect(screen.getByText("Sem worktrees para os filtros atuais.")).toBeInTheDocument();
+    expect(screen.getByText("Sem worktrees para os filtros atuais")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Pesquisar worktrees"), {
       target: { value: "" }
     });
@@ -392,7 +447,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText("Selecione um repositório para começar")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Comandos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Abrir comandos" }));
     fireEvent.change(screen.getByLabelText("Pesquisar comandos"), {
       target: { value: "config" }
     });
@@ -492,6 +547,17 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Desligado" }));
 
     await waitFor(() => expect(mockedApi.updateSettings).toHaveBeenCalledWith({ safeMode: false }));
+  });
+
+  it("updates the interface language setting", async () => {
+    mockedApi.listRepos.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+
+    await waitFor(() => expect(mockedApi.updateSettings).toHaveBeenCalledWith({ locale: "en" }));
   });
 
   it("selects a preferred editor integration", async () => {
@@ -819,7 +885,7 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Worktrees" }));
-    fireEvent.click(screen.getByRole("button", { name: /Nova Worktree/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /Nova Worktree/ })[0]);
     fireEvent.change(screen.getByLabelText("Branch existente"), {
       target: { value: "feature/existing" }
     });

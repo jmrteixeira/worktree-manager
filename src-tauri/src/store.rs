@@ -98,6 +98,9 @@ impl AppState {
         if let Some(safe_mode) = patch.safe_mode {
             data.settings.safe_mode = safe_mode;
         }
+        if let Some(locale) = patch.locale {
+            data.settings.locale = locale;
+        }
         if let Some(integrations) = patch.integrations {
             data.settings.integrations = integrations;
         }

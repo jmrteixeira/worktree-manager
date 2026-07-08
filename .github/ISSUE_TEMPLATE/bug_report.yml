@@ -1,0 +1,70 @@
+name: Bug report
+description: Report something that is broken or surprising.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove private paths, branch names, tokens, and repository details before posting logs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: "A branch handoff failed after..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the repository/worktree shape when it matters.
+      placeholder: |
+        1. Open repository...
+        2. Select worktree...
+        3. Run...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 15, Windows 11, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: git-version
+    attributes:
+      label: Git version
+      placeholder: "git version 2.50.1"
+  - type: dropdown
+    id: app-mode
+    attributes:
+      label: App mode
+      options:
+        - Web dev
+        - Tauri dev
+        - Packaged desktop
+        - Visual mock mode
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant operation logs
+      description: Paste redacted stdout/stderr or diagnostics if useful.
+      render: shell

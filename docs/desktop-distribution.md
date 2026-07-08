@@ -32,13 +32,26 @@ Depois de `npm run desktop:build`, os artefactos principais ficam em:
 - `src-tauri/target/release/bundle/macos/Worktree Manager.app`
 - `src-tauri/target/release/bundle/dmg/Worktree Manager_1.0.0_aarch64.dmg`
 
+## Pipeline De Release
+
+O pipeline publico de release esta documentado em:
+
+- `docs/release-pipeline.md`
+
+Resumo:
+
+- `ci.yml` valida PRs e `main` em Linux, macOS e Windows.
+- `release-please.yml` prepara changelog e versoes semanticas.
+- `release.yml` publica stable e beta por tags SemVer.
+- `nightly.yml` publica a prerelease `nightly`.
+
 ## Artefactos Windows
 
-O instalador Windows deve ser gerado num runner Windows. O caminho recomendado e usar a workflow manual:
+O instalador Windows deve ser gerado num runner Windows. O caminho recomendado para releases publicas e usar `release.yml`. Para testes isolados, usar a workflow manual:
 
 - `.github/workflows/windows-installer.yml`
 
-No GitHub, abrir **Actions** -> **Windows Installer** -> **Run workflow**. A workflow corre `npm run desktop:build:windows` em `windows-latest` e publica um artefacto chamado `worktree-manager-windows`.
+No GitHub, abrir **Actions** -> **Manual Windows Installer** -> **Run workflow**. A workflow corre `npm run desktop:build:windows` em `windows-latest` e publica um artefacto chamado `worktree-manager-windows`.
 
 Artefactos esperados:
 
@@ -51,7 +64,7 @@ A configuracao Windows vive em:
 
 Esta configuracao gera NSIS e MSI, embebe o bootstrapper WebView2 e deixa o instalador NSIS em modo `currentUser`, evitando privilegios de administrador por defeito.
 
-Nota: instaladores Windows publicos devem ser assinados. Sem assinatura, o SmartScreen pode avisar os utilizadores, mesmo que o binario seja legitimo.
+Nota: instaladores Windows publicos devem ter assinatura nativa alem das attestations/checksums. Sem assinatura, o SmartScreen pode avisar os utilizadores, mesmo que o binario seja legitimo.
 
 ## Arquitetura Recomendada
 
@@ -71,12 +84,10 @@ A rota nativa e a mais profissional a medio prazo. A rota sidecar e mais rapida 
 
 ## Release Blockers
 
-- Escolher licenca publica e adicionar `LICENSE`.
 - Trocar os icons gerados pelo Tauri por assets finais da marca.
 - Implementar sidecar ou backend nativo.
-- Configurar assinatura de artefactos.
+- Configurar assinatura nativa Windows/macOS.
 - Configurar updater assinado.
-- Expandir pipeline GitHub Actions para macOS e Linux.
 - Testar instaladores em maquinas limpas.
 
 ## Referencias

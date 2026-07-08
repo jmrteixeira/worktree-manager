@@ -203,6 +203,7 @@ let operations: OperationRecord[] = [
 
 let settings: AppSettings = {
   safeMode: true,
+  locale: "pt",
   integrations: {
     editor: "auto",
     terminal: "auto"

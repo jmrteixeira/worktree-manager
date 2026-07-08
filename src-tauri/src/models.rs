@@ -276,6 +276,19 @@ pub struct AppIntegrations {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Locale {
+    Pt,
+    En,
+}
+
+impl Default for Locale {
+    fn default() -> Self {
+        Self::Pt
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationRecord {
     pub id: String,
@@ -301,6 +314,8 @@ pub struct AppSettings {
     #[serde(default = "default_safe_mode")]
     pub safe_mode: bool,
     #[serde(default)]
+    pub locale: Locale,
+    #[serde(default)]
     pub integrations: AppIntegrations,
 }
 
@@ -308,6 +323,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             safe_mode: true,
+            locale: Locale::Pt,
             integrations: AppIntegrations::default(),
         }
     }
@@ -317,6 +333,7 @@ impl Default for AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsPatch {
     pub safe_mode: Option<bool>,
+    pub locale: Option<Locale>,
     pub integrations: Option<AppIntegrations>,
 }
 
