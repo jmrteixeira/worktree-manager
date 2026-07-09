@@ -76,6 +76,50 @@ export type RepoDetail = {
   lastUpdatedAt: string;
 };
 
+export type DiffMode = "staged" | "unstaged" | "untracked";
+
+export type DiffLineType = "context" | "add" | "delete" | "meta";
+
+export type ReviewDiffLine = {
+  type: DiffLineType;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  content: string;
+};
+
+export type ReviewDiffHunk = {
+  header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: ReviewDiffLine[];
+};
+
+export type ReviewDiffFile = {
+  id: string;
+  path: string;
+  originalPath: string | null;
+  mode: DiffMode;
+  statusLabel: string;
+  binary: boolean;
+  tooLarge: boolean;
+  truncated: boolean;
+  additions: number;
+  deletions: number;
+  hunks: ReviewDiffHunk[];
+  error: string | null;
+};
+
+export type ReviewDiffResponse = {
+  repo: RepoRecord;
+  worktree: WorktreeRecord;
+  branch: string | null;
+  status: GitStatusSummary;
+  files: ReviewDiffFile[];
+  generatedAt: string;
+};
+
 export type WorktreeHandoffResult = {
   branch: string;
   localPath: string;

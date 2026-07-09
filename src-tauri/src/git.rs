@@ -1,7 +1,8 @@
 use crate::{
     models::{
         BranchRecord, CommitInfo, GitFileStatus, GitStatusSummary, LocalBranchWorktreeResult,
-        RepoDetail, RepoRecord, RepoSummary, WorktreeHandoffResult, WorktreeRecord,
+        RepoDetail, RepoRecord, RepoSummary, ReviewDiffFile, ReviewDiffHunk, ReviewDiffLine,
+        ReviewDiffResponse, WorktreeHandoffResult, WorktreeRecord,
     },
     store::{absolute_path, now_iso, path_string, AppState},
 };
@@ -16,6 +17,8 @@ use std::{
 use uuid::Uuid;
 
 const MAX_OPERATION_LOG_CHARS: usize = 20_000;
+const MAX_REVIEW_FILE_BYTES: u64 = 220_000;
+const MAX_REVIEW_UNTRACKED_LINES: usize = 4_000;
 
 #[derive(Debug, Clone)]
 pub struct GitResult {
@@ -561,6 +564,373 @@ pub fn get_repo_detail(
     })
 }
 
+pub fn get_repo_review(
+    repo: &RepoRecord,
+    focused_path: &Path,
+    state: Option<&AppState>,
+) -> Result<ReviewDiffResponse, String> {
+    let worktrees = get_worktrees(Path::new(&repo.path), focused_path, state)?;
+    let status = run_git(
+        focused_path,
+        git_args(&["status", "--porcelain=v1", "-uall"]),
+        state,
+        RunGitOptions {
+            record: false,
+            ..Default::default()
+        },
+    )?;
+    let branch = get_checked_out_branch(focused_path, state)?;
+    let worktree = worktrees
+        .iter()
+        .find(|item| comparable_path(Path::new(&item.path)) == comparable_path(focused_path))
+        .or_else(|| worktrees.iter().find(|item| item.is_current))
+        .cloned()
+        .ok_or_else(|| "A worktree selecionada nao pertence a este repositorio.".to_string())?;
+    let status_files = parse_status_porcelain(&status.stdout);
+    let mut files = Vec::new();
+    for file in &status_files {
+        for mode in review_modes_for_file(file) {
+            files.push(build_review_diff_file(focused_path, file, &mode, state)?);
+        }
+    }
+    files.sort_by(|left, right| {
+        let path_order = left.path.cmp(&right.path);
+        if path_order != std::cmp::Ordering::Equal {
+            return path_order;
+        }
+        review_mode_order(&left.mode).cmp(&review_mode_order(&right.mode))
+    });
+
+    Ok(ReviewDiffResponse {
+        repo: repo.clone(),
+        worktree,
+        branch,
+        status: summarize_file_statuses(&status_files),
+        files,
+        generated_at: now_iso(),
+    })
+}
+
+fn review_modes_for_file(file: &GitFileStatus) -> Vec<String> {
+    if file.index_status == "?" && file.worktree_status == "?" {
+        return vec!["untracked".to_string()];
+    }
+
+    let mut modes = Vec::new();
+    if !file.index_status.trim().is_empty() {
+        modes.push("staged".to_string());
+    }
+    if !file.worktree_status.trim().is_empty() {
+        modes.push("unstaged".to_string());
+    }
+    modes
+}
+
+fn review_mode_order(mode: &str) -> usize {
+    match mode {
+        "staged" => 0,
+        "unstaged" => 1,
+        _ => 2,
+    }
+}
+
+fn build_review_diff_file(
+    worktree_path: &Path,
+    file: &GitFileStatus,
+    mode: &str,
+    state: Option<&AppState>,
+) -> Result<ReviewDiffFile, String> {
+    if mode == "untracked" {
+        return build_untracked_review_file(worktree_path, file);
+    }
+
+    let args = if mode == "staged" {
+        vec![
+            "diff".to_string(),
+            "--cached".to_string(),
+            "--no-ext-diff".to_string(),
+            "--unified=3".to_string(),
+            "--".to_string(),
+            file.path.clone(),
+        ]
+    } else {
+        vec![
+            "diff".to_string(),
+            "--no-ext-diff".to_string(),
+            "--unified=3".to_string(),
+            "--".to_string(),
+            file.path.clone(),
+        ]
+    };
+    let result = run_git(
+        worktree_path,
+        args,
+        state,
+        RunGitOptions {
+            allow_failure: true,
+            record: false,
+            timeout_ms: 120_000,
+        },
+    )?;
+
+    if result.exit_code != Some(0) {
+        return Ok(empty_review_file(
+            file,
+            mode,
+            Some(if result.stderr.trim().is_empty() {
+                "Nao foi possivel gerar o diff.".to_string()
+            } else {
+                result.stderr.trim().to_string()
+            }),
+        ));
+    }
+
+    let mut review_file = empty_review_file(file, mode, None);
+    let parsed = parse_unified_diff(&result.stdout);
+    review_file.hunks = parsed.hunks;
+    review_file.additions = parsed.additions;
+    review_file.deletions = parsed.deletions;
+    review_file.binary = parsed.binary;
+    review_file.too_large = parsed.too_large;
+    review_file.truncated = parsed.truncated;
+    review_file.error = parsed.error;
+    Ok(review_file)
+}
+
+fn build_untracked_review_file(
+    worktree_path: &Path,
+    file: &GitFileStatus,
+) -> Result<ReviewDiffFile, String> {
+    let absolute_path = absolute_path(&worktree_path.join(&file.path));
+    let base_file = empty_review_file(file, "untracked", None);
+    if !is_path_inside(worktree_path, &absolute_path) {
+        return Ok(ReviewDiffFile {
+            error: Some("O ficheiro esta fora da worktree.".to_string()),
+            ..base_file
+        });
+    }
+
+    let metadata = fs::metadata(&absolute_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Ok(ReviewDiffFile {
+            error: Some("O caminho nao e um ficheiro regular.".to_string()),
+            ..base_file
+        });
+    }
+    if metadata.len() > MAX_REVIEW_FILE_BYTES {
+        return Ok(ReviewDiffFile {
+            too_large: true,
+            error: Some("Ficheiro demasiado grande para pre-visualizacao.".to_string()),
+            ..base_file
+        });
+    }
+
+    let bytes = fs::read(&absolute_path).map_err(|error| error.to_string())?;
+    if is_binary_bytes(&bytes) {
+        return Ok(ReviewDiffFile {
+            binary: true,
+            error: Some("Ficheiro binario nao pre-visualizavel.".to_string()),
+            ..base_file
+        });
+    }
+
+    let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+    let mut all_lines = text.split('\n').map(str::to_string).collect::<Vec<_>>();
+    if all_lines.last().is_some_and(|line| line.is_empty()) {
+        all_lines.pop();
+    }
+    let truncated = all_lines.len() > MAX_REVIEW_UNTRACKED_LINES;
+    let lines = all_lines
+        .into_iter()
+        .take(MAX_REVIEW_UNTRACKED_LINES)
+        .enumerate()
+        .map(|(index, content)| ReviewDiffLine {
+            r#type: "add".to_string(),
+            old_line_number: None,
+            new_line_number: Some(index + 1),
+            content,
+        })
+        .collect::<Vec<_>>();
+
+    let hunk = ReviewDiffHunk {
+        header: format!("@@ -0,0 +1,{} @@", lines.len()),
+        old_start: 0,
+        old_lines: 0,
+        new_start: 1,
+        new_lines: lines.len(),
+        lines,
+    };
+
+    Ok(ReviewDiffFile {
+        truncated,
+        additions: hunk.lines.len(),
+        hunks: if hunk.lines.is_empty() {
+            Vec::new()
+        } else {
+            vec![hunk]
+        },
+        ..base_file
+    })
+}
+
+fn empty_review_file(file: &GitFileStatus, mode: &str, error: Option<String>) -> ReviewDiffFile {
+    ReviewDiffFile {
+        id: format!("{}:{}", mode, file.path),
+        path: file.path.clone(),
+        original_path: file.original_path.clone(),
+        mode: mode.to_string(),
+        status_label: file.label.clone(),
+        binary: false,
+        too_large: false,
+        truncated: false,
+        additions: 0,
+        deletions: 0,
+        hunks: Vec::new(),
+        error,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedReviewDiff {
+    hunks: Vec<ReviewDiffHunk>,
+    additions: usize,
+    deletions: usize,
+    binary: bool,
+    too_large: bool,
+    truncated: bool,
+    error: Option<String>,
+}
+
+fn parse_unified_diff(stdout: &str) -> ParsedReviewDiff {
+    if stdout
+        .lines()
+        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch")
+    {
+        return ParsedReviewDiff {
+            hunks: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            binary: true,
+            too_large: false,
+            truncated: false,
+            error: Some("Ficheiro binario nao pre-visualizavel.".to_string()),
+        };
+    }
+
+    let mut hunks: Vec<ReviewDiffHunk> = Vec::new();
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+
+    for raw_line in stdout.replace("\r\n", "\n").split('\n') {
+        if let Some((old_start, old_lines, new_start, new_lines)) = parse_hunk_header(raw_line) {
+            hunks.push(ReviewDiffHunk {
+                header: raw_line.to_string(),
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+                lines: Vec::new(),
+            });
+            old_line = old_start;
+            new_line = new_start;
+            continue;
+        }
+
+        let Some(current_hunk) = hunks.last_mut() else {
+            continue;
+        };
+
+        if raw_line.starts_with("\\ No newline") {
+            current_hunk.lines.push(ReviewDiffLine {
+                r#type: "meta".to_string(),
+                old_line_number: None,
+                new_line_number: None,
+                content: raw_line.to_string(),
+            });
+            continue;
+        }
+
+        let marker = raw_line.chars().next().unwrap_or(' ');
+        let content = raw_line.get(1..).unwrap_or_default().to_string();
+        match marker {
+            '+' => {
+                current_hunk.lines.push(ReviewDiffLine {
+                    r#type: "add".to_string(),
+                    old_line_number: None,
+                    new_line_number: Some(new_line),
+                    content,
+                });
+                new_line += 1;
+                additions += 1;
+            }
+            '-' => {
+                current_hunk.lines.push(ReviewDiffLine {
+                    r#type: "delete".to_string(),
+                    old_line_number: Some(old_line),
+                    new_line_number: None,
+                    content,
+                });
+                old_line += 1;
+                deletions += 1;
+            }
+            ' ' => {
+                current_hunk.lines.push(ReviewDiffLine {
+                    r#type: "context".to_string(),
+                    old_line_number: Some(old_line),
+                    new_line_number: Some(new_line),
+                    content,
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+            _ => current_hunk.lines.push(ReviewDiffLine {
+                r#type: "meta".to_string(),
+                old_line_number: None,
+                new_line_number: None,
+                content: raw_line.to_string(),
+            }),
+        }
+    }
+
+    ParsedReviewDiff {
+        hunks,
+        additions,
+        deletions,
+        binary: false,
+        too_large: false,
+        truncated: false,
+        error: None,
+    }
+}
+
+fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize, usize)> {
+    let header = line.strip_prefix("@@ -")?;
+    let (old_part, rest) = header.split_once(" +")?;
+    let (new_part, _) = rest.split_once(" @@")?;
+    let (old_start, old_lines) = parse_hunk_range(old_part)?;
+    let (new_start, new_lines) = parse_hunk_range(new_part)?;
+    Some((old_start, old_lines, new_start, new_lines))
+}
+
+fn parse_hunk_range(value: &str) -> Option<(usize, usize)> {
+    if let Some((start, count)) = value.split_once(',') {
+        return Some((start.parse().ok()?, count.parse().ok()?));
+    }
+    Some((value.parse().ok()?, 1))
+}
+
+fn is_binary_bytes(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|byte| *byte == 0)
+}
+
+fn is_path_inside(parent_path: &Path, child_path: &Path) -> bool {
+    let parent = absolute_path(parent_path);
+    let child = absolute_path(child_path);
+    child == parent || child.starts_with(parent)
+}
+
 pub fn get_repo_summary(
     repo: &RepoRecord,
     focused_path: &Path,
@@ -659,6 +1029,7 @@ pub fn create_worktree(
     new_branch: bool,
     name: Option<&str>,
     requested_path: Option<&str>,
+    from: Option<&str>,
     default_directory: Option<&str>,
     state: &AppState,
 ) -> Result<PathBuf, String> {
@@ -690,13 +1061,38 @@ pub fn create_worktree(
     let args = if new_branch {
         assert_valid_branch_name(repo_path, branch, Some(state))?;
         assert_branch_does_not_exist(repo_path, branch, Some(state))?;
-        vec![
-            "worktree".to_string(),
-            "add".to_string(),
-            "-b".to_string(),
-            branch.to_string(),
-            path_string(&target_path),
-        ]
+        if let Some(start_point) = from.filter(|value| !value.trim().is_empty()).map(str::trim) {
+            let remote_exists = remote_branch_exists(repo_path, start_point, Some(state))?;
+            assert_ref_exists(repo_path, start_point, Some(state))?;
+            if remote_exists {
+                vec![
+                    "worktree".to_string(),
+                    "add".to_string(),
+                    "-b".to_string(),
+                    branch.to_string(),
+                    "--track".to_string(),
+                    path_string(&target_path),
+                    start_point.to_string(),
+                ]
+            } else {
+                vec![
+                    "worktree".to_string(),
+                    "add".to_string(),
+                    "-b".to_string(),
+                    branch.to_string(),
+                    path_string(&target_path),
+                    start_point.to_string(),
+                ]
+            }
+        } else {
+            vec![
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                branch.to_string(),
+                path_string(&target_path),
+            ]
+        }
     } else {
         match resolve_branch_source(repo_path, branch, Some(state))? {
             BranchSource::Local(local_branch) => {

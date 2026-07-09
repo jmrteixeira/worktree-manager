@@ -25,6 +25,7 @@ import {
   decodePathId,
   getBranches,
   getRepoDetail,
+  getRepoReview,
   getRepoSummary,
   getWorktrees,
   GitCommandError,
@@ -192,6 +193,18 @@ export function createApp(store: AppStore = createDefaultStore()) {
     })
   );
 
+  app.get(
+    "/api/repos/:repoId/review",
+    withRepo(store, async (repo, req, res) => {
+      const focusedPath = await resolveRepoWorktreePath(
+        repo.path,
+        stringQuery(req.query.worktreePath),
+        store
+      );
+      res.json(await getRepoReview(repo, focusedPath, store));
+    })
+  );
+
   app.post(
     "/api/repos/:repoId/worktrees",
     withRepo(store, async (repo, req, res) => {
@@ -206,6 +219,7 @@ export function createApp(store: AppStore = createDefaultStore()) {
             newBranch: req.body?.newBranch === true,
             name: optionalBodyString(req.body, "name"),
             path: optionalBodyString(req.body, "path"),
+            from: optionalBodyString(req.body, "from"),
             basePath: settings.worktreeDirectory
           },
           store

@@ -11,6 +11,7 @@ import type {
   OperationRecord,
   PickFolderResponse,
   RepoRecord,
+  ReviewDiffResponse,
   RepoSummary,
   WorktreeHandoffResult,
   WorktreeRecord
@@ -96,7 +97,10 @@ const httpApi = {
   detail(repoId: string, worktreePath?: string) {
     return request<RepoDetail>(withWorktreeQuery(`/api/repos/${repoId}/detail`, worktreePath));
   },
-  createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string }) {
+  review(repoId: string, worktreePath?: string) {
+    return request<ReviewDiffResponse>(withWorktreeQuery(`/api/repos/${repoId}/review`, worktreePath));
+  },
+  createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string; from?: string }) {
     return request<{ path: string }>(`/api/repos/${repoId}/worktrees`, {
       method: "POST",
       body: JSON.stringify(body)

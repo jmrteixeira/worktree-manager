@@ -42,6 +42,7 @@ import { api } from "./api";
 import type {
   BranchRecord,
   DiagnosticsSnapshot,
+  DiffMode,
   FsEntry,
   FsListResponse,
   GitStatusSummary,
@@ -53,6 +54,8 @@ import type {
   OperationRecord,
   RepoDetail,
   RepoRecord,
+  ReviewDiffFile,
+  ReviewDiffResponse,
   RepoSummary,
   WorktreeRecord
 } from "./types";
@@ -88,6 +91,7 @@ type AppPage =
   | "workflows"
   | "worktrees"
   | "branches"
+  | "review"
   | "operations"
   | "integrations"
   | "privacy"
@@ -96,6 +100,8 @@ type AppPage =
 type WorktreeFilter = "all" | "current" | "dirty" | "clean" | "ahead" | "behind" | "detached";
 type BranchFilter = "all" | "local" | "remote" | "current" | "ahead" | "behind" | "no-upstream";
 type OperationFilter = "all" | "success" | "error" | "timeout";
+type ReviewFilter = "all" | DiffMode;
+type DiffViewMode = "unified" | "split";
 type GuidedWorkflowId =
   | "parallel-worktree"
   | "handoff-local"
@@ -174,6 +180,11 @@ const PAGE_COPY: Record<Locale, Record<AppPage, { nav: string; title: string; su
       title: "Branches",
       subtitle: "Gerir branches e sincronização Git"
     },
+    review: {
+      nav: "Revisão",
+      title: "Revisão",
+      subtitle: "Comparar alterações locais da worktree em foco"
+    },
     operations: {
       nav: "Operações",
       title: "Operações",
@@ -225,6 +236,11 @@ const PAGE_COPY: Record<Locale, Record<AppPage, { nav: string; title: string; su
       nav: "Branches",
       title: "Branches",
       subtitle: "Manage branches and Git synchronization"
+    },
+    review: {
+      nav: "Review",
+      title: "Review",
+      subtitle: "Compare local changes in the focused worktree"
     },
     operations: {
       nav: "Operations",
@@ -642,12 +658,12 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Preparar pull": "Prepare pull",
   "Executar fetch": "Run fetch",
   "Rever alterações locais": "Review local changes",
-  "Abrir o detalhe da worktree em foco para ver ficheiros alterados.": "Open the focused worktree detail to review changed files.",
+  "Abrir o visualizador de revisão da worktree em foco.": "Open the focused worktree review viewer.",
   "Revisão": "Review",
-  "Abrir a vista de detalhe da worktree em foco.": "Open the focused worktree detail view.",
+  "Abrir a revisão da worktree em foco.": "Open the focused worktree review.",
   "Rever ficheiros staged, unstaged e por seguir.": "Review staged, unstaged and untracked files.",
   "Decidir entre commit, stash, handoff ou limpeza manual.": "Decide between commit, stash, handoff or manual cleanup.",
-  "Abrir detalhe": "Open detail",
+  "Abrir revisão": "Open review",
   "Navegação": "Navigation",
   "Repositório em foco": "Focused repository",
   "Válido": "Valid",
@@ -657,6 +673,36 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Atual": "Current",
   "Branch atual": "Current branch",
   "Alterações": "Changes",
+  "Visualizador de revisão": "Review viewer",
+  "Ficheiros alterados": "Changed files",
+  "Pesquisar ficheiros": "Search files",
+  "Todos": "All",
+  "Staged": "Staged",
+  "Unstaged": "Unstaged",
+  "Untracked": "Untracked",
+  "Unified": "Unified",
+  "Split": "Split",
+  "Sem ficheiro selecionado": "No file selected",
+  "Seleciona um ficheiro para rever o diff.": "Select a file to review the diff.",
+  "Sem alterações para revisão": "No changes to review",
+  "A worktree em foco está limpa.": "The focused worktree is clean.",
+  "Sem ficheiros para os filtros atuais": "No files for the current filters",
+  "Não pré-visualizável": "Not previewable",
+  "Ficheiro binário": "Binary file",
+  "Demasiado grande": "Too large",
+  "adicionadas": "added",
+  "removidas": "removed",
+  "Revisão indisponível": "Review unavailable",
+  "A carregar revisão": "Loading review",
+  "A gerar diffs da worktree em foco.": "Generating diffs for the focused worktree.",
+  "Modo de visualização": "View mode",
+  "Revisão read-only de staged, unstaged e untracked.": "Read-only review of staged, unstaged and untracked changes.",
+  "Prontas para commit": "Ready for commit",
+  "Alterações locais": "Local changes",
+  "Sem diff para mostrar": "No diff to show",
+  "Este estado não tem conteúdo textual renderizável.": "This state has no renderable text content.",
+  "Escolher repositório em foco": "Choose focused repository",
+  "Sem repositórios": "No repositories",
   "Sem stash": "No stash",
   "Commits": "Commits",
   "Workflows guiados": "Guided workflows",
@@ -818,6 +864,7 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Tipo": "Type",
   "Branch existente": "Existing branch",
   "Nova branch": "New branch",
+  "Branch base": "Base branch",
   "Nome da pasta": "Folder name",
   "opcional": "optional",
   "Local completo": "Full path",
@@ -894,6 +941,11 @@ function WorktreeManagerApp() {
   const [detailWorktreePath, setDetailWorktreePath] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [review, setReview] = useState<ReviewDiffResponse | null>(null);
+  const [reviewWorktreePath, setReviewWorktreePath] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [selectedReviewFileId, setSelectedReviewFileId] = useState<string | null>(null);
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -1057,6 +1109,16 @@ function WorktreeManagerApp() {
     void refreshDetail(selectedRepoId, requestedPath ?? undefined);
   }, [activePage, detailWorktreePath, focusedWorktreePaths, selectedRepo?.path, selectedRepoId, workspaceHydrated]);
 
+  useEffect(() => {
+    if (!workspaceHydrated || activePage !== "review" || !selectedRepoId) return;
+
+    const requestedPath =
+      reviewWorktreePath ??
+      (selectedRepoId ? focusedWorktreePaths[selectedRepoId] : undefined) ??
+      selectedRepo?.path;
+    void refreshReview(selectedRepoId, requestedPath ?? undefined);
+  }, [activePage, focusedWorktreePaths, reviewWorktreePath, selectedRepo?.path, selectedRepoId, workspaceHydrated]);
+
   async function loadInitialState() {
     setLoading(true);
     try {
@@ -1211,6 +1273,37 @@ function WorktreeManagerApp() {
       setDetailError(errorMessage(caught));
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function refreshReview(repoId = selectedRepoId, worktreePath?: string) {
+    if (!repoId) return;
+    setReviewLoading(true);
+    setReviewError(null);
+    try {
+      const nextReview = await api.review(repoId, worktreePath);
+      setReview(nextReview);
+      setReviewWorktreePath(nextReview.worktree.path);
+      setSelectedReviewFileId((currentId) =>
+        currentId && nextReview.files.some((file) => file.id === currentId)
+          ? currentId
+          : nextReview.files[0]?.id ?? null
+      );
+    } catch (caught) {
+      if (worktreePath && isInvalidFocusedWorktreeError(caught)) {
+        setReviewWorktreePath(null);
+        const fallbackReview = await api.review(repoId);
+        setReview(fallbackReview);
+        setSelectedReviewFileId(fallbackReview.files[0]?.id ?? null);
+        setReviewError(t("A worktree selecionada já não existe. Mostro o workspace local."));
+        return;
+      }
+
+      setReview(null);
+      setSelectedReviewFileId(null);
+      setReviewError(errorMessage(caught));
+    } finally {
+      setReviewLoading(false);
     }
   }
 
@@ -1755,6 +1848,7 @@ function WorktreeManagerApp() {
     { page: "workflows", label: pageCopy.workflows.nav, icon: <CheckCircle2 size={18} /> },
     { page: "worktrees", label: pageCopy.worktrees.nav, icon: <GitFork size={18} /> },
     { page: "branches", label: pageCopy.branches.nav, icon: <GitBranch size={18} /> },
+    { page: "review", label: pageCopy.review.nav, icon: <Search size={18} /> },
     { page: "operations", label: pageCopy.operations.nav, icon: <TerminalSquare size={18} /> },
     { page: "integrations", label: pageCopy.integrations.nav, icon: <Plug size={18} /> },
     { page: "privacy", label: pageCopy.privacy.nav, icon: <Shield size={18} /> },
@@ -1825,8 +1919,8 @@ function WorktreeManagerApp() {
       return;
     }
 
-    setDetailWorktreePath(focusedPath);
-    navigateToPage("detail");
+    setReviewWorktreePath(focusedPath);
+    navigateToPage("review");
   }
 
   function runGuidedWorkflowSecondary(workflowId: GuidedWorkflowId) {
@@ -1956,7 +2050,7 @@ function WorktreeManagerApp() {
       {
         id: "review-changes",
         title: t("Rever alterações locais"),
-        description: t("Abrir o detalhe da worktree em foco para ver ficheiros alterados."),
+        description: t("Abrir o visualizador de revisão da worktree em foco."),
         section: t("Revisão"),
         icon: <Search size={20} />,
         status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
@@ -1966,7 +2060,7 @@ function WorktreeManagerApp() {
             ? formatChangeCount(changedFiles, locale)
             : t("Sem alterações"),
         steps: [
-          t("Abrir a vista de detalhe da worktree em foco."),
+          t("Abrir a revisão da worktree em foco."),
           t("Rever ficheiros staged, unstaged e por seguir."),
           t("Decidir entre commit, stash, handoff ou limpeza manual.")
         ],
@@ -1978,7 +2072,7 @@ function WorktreeManagerApp() {
                 : `${formatChangeCount(changedFiles, locale)} detetadas.`
             ]
           : [t("Seleciona um repositório para começar.")],
-        primaryLabel: t("Abrir detalhe"),
+        primaryLabel: t("Abrir revisão"),
         disabled: blockedWithoutRepo
       }
     ];
@@ -2071,6 +2165,18 @@ function WorktreeManagerApp() {
         keywords: ["pull", "ff", "atualizar"],
         icon: <GitBranch size={18} />,
         run: () => confirmPull(focusedPath, "focused")
+      },
+      {
+        id: "review:focused",
+        title: t("Rever alterações locais"),
+        subtitle: focusedPath,
+        section: t("Revisão"),
+        keywords: ["review", "diff", "alterações", "staged", "unstaged", "untracked"],
+        icon: <Search size={18} />,
+        run: () => {
+          setReviewWorktreePath(focusedPath);
+          navigateToPage("review");
+        }
       },
       {
         id: "worktree:create",
@@ -2318,6 +2424,27 @@ function WorktreeManagerApp() {
         onPull={(path) => confirmPull(path, "detail")}
         onHandoffLocal={confirmHandoffWorktreeToLocal}
         onMoveLocalToWorktree={confirmMoveLocalBranchToWorktree}
+        onReview={(path) => {
+          setReviewWorktreePath(path);
+          navigateToPage("review");
+        }}
+      />
+    );
+  }
+
+  function renderReviewPage() {
+    if (!selectedRepo) return renderFocusedRepoPlaceholder();
+
+    return (
+      <RepoReviewView
+        review={review?.repo.id === selectedRepo.id ? review : null}
+        error={reviewError}
+        loading={reviewLoading}
+        selectedFileId={selectedReviewFileId}
+        onSelectFile={setSelectedReviewFileId}
+        onRefresh={() => void refreshReview(selectedRepo.id, review?.worktree.path ?? reviewWorktreePath ?? selectedFocusedWorktreePath ?? undefined)}
+        onOpen={openExternalPath}
+        onCopy={(path) => void copyPath(path, setError, locale)}
       />
     );
   }
@@ -2594,6 +2721,7 @@ function WorktreeManagerApp() {
     if (activePage === "workflows") return renderWorkflowsPage();
     if (activePage === "worktrees") return renderWorktreesPage();
     if (activePage === "branches") return renderBranchesPage();
+    if (activePage === "review") return renderReviewPage();
 
     return (
       <>
@@ -2625,7 +2753,7 @@ function WorktreeManagerApp() {
   return (
     <I18N_CONTEXT.Provider value={i18n}>
     <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
-      {loading || actionLoading || detailLoading ? (
+      {loading || actionLoading || detailLoading || reviewLoading ? (
         <div className="app-progress" role="progressbar" aria-label={a11yCopy.progress} />
       ) : null}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
@@ -2653,44 +2781,6 @@ function WorktreeManagerApp() {
             </button>
           ))}
         </nav>
-
-        <div className="repo-card">
-          <span className="nav-label">{shellCopy.workspace}</span>
-          {workspaceRepos.length ? (
-            <>
-              <div className="repo-current">
-                <span className="status-dot" />
-                <div>
-                  <span>
-                    {workspaceRepos.length}{" "}
-                    {workspaceRepos.length === 1 ? shellCopy.activeRepository : shellCopy.activeRepositories}
-                  </span>
-                  <strong>{selectedRepo?.name ?? workspaceRepos[0]?.name}</strong>
-                </div>
-              </div>
-              <div className="workspace-mini-list">
-                {workspaceRepos.map((repo) => (
-                  <button
-                    key={repo.id}
-                    className={repo.id === selectedRepoId ? "mini-repo active" : "mini-repo"}
-                    onClick={() => setSelectedRepoId(repo.id)}
-                    title={repo.path}
-                  >
-                    <FolderGit2 size={15} />
-                    <span>{repo.name}</span>
-                  </button>
-                ))}
-              </div>
-              <button className="ghost-button full" onClick={() => setDialog({ kind: "repo-picker" })}>
-                {shellCopy.addRepositoryLower}
-              </button>
-            </>
-          ) : (
-            <button className="ghost-button full" onClick={() => setDialog({ kind: "repo-picker" })}>
-              {shellCopy.selectRepository}
-            </button>
-          )}
-        </div>
 
         <div className="sidebar-footer">
           <span className="version-label">v1.0.0</span>
@@ -2732,9 +2822,14 @@ function WorktreeManagerApp() {
               <span>{shellCopy.commands}</span>
             </button>
             <ThemeToggleButton value={themePreference} onChange={setThemePreference} />
+            <RepositoryFocusSelect
+              repos={workspaceRepos}
+              selectedRepoId={selectedRepoId}
+              onChange={setSelectedRepoId}
+            />
             <button className="primary-button" onClick={() => setDialog({ kind: "repo-picker" })}>
               <Folder size={18} />
-              {shellCopy.addRepository}
+              {t("Adicionar")}
             </button>
           </div>
         </header>
@@ -2922,6 +3017,43 @@ function DashboardSection({
       </div>
       {children}
     </section>
+  );
+}
+
+function RepositoryFocusSelect({
+  repos,
+  selectedRepoId,
+  onChange
+}: {
+  repos: RepoRecord[];
+  selectedRepoId: string | null;
+  onChange: (repoId: string) => void;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <label className="repo-focus-select">
+      <span className="sr-only">{t("Repositório em foco")}</span>
+      <span className="repo-focus-control">
+        <span className={repos.length ? "repo-focus-status active" : "repo-focus-status"} aria-hidden="true" />
+        <select
+          aria-label={t("Escolher repositório em foco")}
+          disabled={!repos.length}
+          value={selectedRepoId ?? ""}
+          onChange={(event) => {
+            if (event.target.value) onChange(event.target.value);
+          }}
+        >
+          {!repos.length ? <option value="">{t("Sem repositórios")}</option> : null}
+          {repos.map((repo) => (
+            <option key={repo.id} value={repo.id}>
+              {repo.name}
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={15} aria-hidden="true" />
+      </span>
+    </label>
   );
 }
 
@@ -3213,6 +3345,146 @@ function matchesSearch(values: Array<string | null | undefined>, query: string):
   return values.some((value) => normalizeSearchText(value ?? "").includes(normalizedQuery));
 }
 
+function matchesReviewFile(file: ReviewDiffFile, filter: ReviewFilter, query: string): boolean {
+  if (filter !== "all" && file.mode !== filter) return false;
+  return matchesSearch([file.path, file.originalPath, file.statusLabel, file.mode], query);
+}
+
+function renderReviewDiff(
+  file: ReviewDiffFile,
+  viewMode: DiffViewMode,
+  t: (value: string) => string
+) {
+  const warning = reviewFileWarning(file, t);
+  if (warning) {
+    return (
+      <div className="review-warning">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>{t("Não pré-visualizável")}</strong>
+          <p>{warning}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!file.hunks.length) {
+    return (
+      <div className="review-empty review-empty-main">
+        <EyeOff size={28} />
+        <strong>{t("Sem diff para mostrar")}</strong>
+        <span>{t("Este estado não tem conteúdo textual renderizável.")}</span>
+      </div>
+    );
+  }
+
+  return viewMode === "split" ? <SplitDiffView file={file} /> : <UnifiedDiffView file={file} />;
+}
+
+function UnifiedDiffView({ file }: { file: ReviewDiffFile }) {
+  return (
+    <div className="diff-view unified-diff" role="region" aria-label={`Diff ${file.path}`}>
+      {file.truncated ? <ReviewTruncatedNotice /> : null}
+      {file.hunks.map((hunk) => (
+        <div className="diff-hunk" key={hunk.header}>
+          <div className="diff-hunk-header">{hunk.header}</div>
+          <table className="diff-table">
+            <tbody>
+              {hunk.lines.map((line, index) => (
+                <tr className={`diff-row ${line.type}`} key={`${hunk.header}-${index}`}>
+                  <td className="diff-line-number">{line.oldLineNumber ?? ""}</td>
+                  <td className="diff-line-number">{line.newLineNumber ?? ""}</td>
+                  <td className="diff-line-code">
+                    <code>{line.type === "meta" ? line.content : `${diffLineMarker(line.type)}${line.content}`}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SplitDiffView({ file }: { file: ReviewDiffFile }) {
+  return (
+    <div className="diff-view split-diff" role="region" aria-label={`Split diff ${file.path}`}>
+      {file.truncated ? <ReviewTruncatedNotice /> : null}
+      {file.hunks.map((hunk) => (
+        <div className="diff-hunk" key={hunk.header}>
+          <div className="diff-hunk-header">{hunk.header}</div>
+          <table className="diff-table split">
+            <tbody>
+              {hunk.lines.map((line, index) =>
+                line.type === "meta" ? (
+                  <tr className="diff-row meta" key={`${hunk.header}-${index}`}>
+                    <td className="diff-line-code" colSpan={4}>
+                      <code>{line.content}</code>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr className={`diff-row ${line.type}`} key={`${hunk.header}-${index}`}>
+                    <td className="diff-line-number">{line.oldLineNumber ?? ""}</td>
+                    <td className="diff-line-code old">
+                      <code>{line.type === "add" ? "" : `${diffLineMarker(line.type)}${line.content}`}</code>
+                    </td>
+                    <td className="diff-line-number">{line.newLineNumber ?? ""}</td>
+                    <td className="diff-line-code new">
+                      <code>{line.type === "delete" ? "" : `${diffLineMarker(line.type)}${line.content}`}</code>
+                    </td>
+                  </tr>
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReviewTruncatedNotice() {
+  const { t } = useI18n();
+  return (
+    <div className="review-warning compact">
+      <AlertTriangle size={16} />
+      <span>{t("Truncado")}</span>
+    </div>
+  );
+}
+
+function reviewFileWarning(file: ReviewDiffFile, t: (value: string) => string): string | null {
+  if (file.binary) return t("Ficheiro binário");
+  if (file.tooLarge) return t("Demasiado grande");
+  if (file.error) return file.error;
+  return null;
+}
+
+function diffLineMarker(type: ReviewDiffFile["hunks"][number]["lines"][number]["type"]) {
+  if (type === "add") return "+";
+  if (type === "delete") return "-";
+  if (type === "context") return " ";
+  return "";
+}
+
+function reviewModeLabel(mode: DiffMode, t: (value: string) => string) {
+  if (mode === "staged") return t("Staged");
+  if (mode === "unstaged") return t("Unstaged");
+  return t("Untracked");
+}
+
+function reviewModeBadgeTone(mode: DiffMode) {
+  if (mode === "staged") return "green";
+  if (mode === "unstaged") return "blue";
+  return "purple";
+}
+
+function formatReviewChangeSummary(file: ReviewDiffFile, t: (value: string) => string) {
+  if (file.binary || file.tooLarge || file.error) return t("Não pré-visualizável");
+  return `+${file.additions} ${t("adicionadas")} / -${file.deletions} ${t("removidas")}`;
+}
+
 function normalizeSearchText(value: string): string {
   return value.trim().toLocaleLowerCase("pt-PT");
 }
@@ -3444,7 +3716,8 @@ function RepoDetailView({
   onFetch,
   onPull,
   onHandoffLocal,
-  onMoveLocalToWorktree
+  onMoveLocalToWorktree,
+  onReview
 }: {
   detail: RepoDetail | null;
   error: string | null;
@@ -3458,6 +3731,7 @@ function RepoDetailView({
   onPull: (path: string) => void;
   onHandoffLocal: (worktree: WorktreeRecord) => void;
   onMoveLocalToWorktree: () => void;
+  onReview: (path: string) => void;
 }) {
   const { locale, t } = useI18n();
 
@@ -3522,6 +3796,10 @@ function RepoDetailView({
           <button className="secondary-button" onClick={() => onCopy(detail.worktree.path)}>
             <Copy size={16} />
             {t("Copiar")}
+          </button>
+          <button className="secondary-button" onClick={() => onReview(detail.worktree.path)}>
+            <Search size={16} />
+            {t("Revisão")}
           </button>
           <button className="secondary-button" onClick={() => onFetch(detail.worktree.path)}>
             <RefreshCcw size={16} />
@@ -3655,6 +3933,226 @@ function ChangedFilesTable({ files }: { files: RepoDetail["files"] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function RepoReviewView({
+  review,
+  error,
+  loading,
+  selectedFileId,
+  onSelectFile,
+  onRefresh,
+  onOpen,
+  onCopy
+}: {
+  review: ReviewDiffResponse | null;
+  error: string | null;
+  loading: boolean;
+  selectedFileId: string | null;
+  onSelectFile: (fileId: string | null) => void;
+  onRefresh: () => void;
+  onOpen: (path: string, target: OpenTarget) => void;
+  onCopy: (path: string) => void;
+}) {
+  const { t } = useI18n();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ReviewFilter>("all");
+  const [viewMode, setViewMode] = useState<DiffViewMode>("unified");
+
+  if (!review) {
+    return (
+      <section className="panel focus-placeholder">
+        {loading ? <Loader2 className="spin" size={22} /> : <AlertTriangle size={22} />}
+        <div>
+          <h2>{error ? t("Revisão indisponível") : t("A carregar revisão")}</h2>
+          <p>{error ?? t("A gerar diffs da worktree em foco.")}</p>
+        </div>
+      </section>
+    );
+  }
+
+  const counts = {
+    staged: review.files.filter((file) => file.mode === "staged").length,
+    unstaged: review.files.filter((file) => file.mode === "unstaged").length,
+    untracked: review.files.filter((file) => file.mode === "untracked").length
+  };
+  const filteredFiles = review.files.filter((file) => matchesReviewFile(file, filter, query));
+  const selectedFile =
+    filteredFiles.find((file) => file.id === selectedFileId) ??
+    filteredFiles[0] ??
+    null;
+  const selectedPath = selectedFile ? joinFsPath(review.worktree.path, selectedFile.path) : null;
+  const filterOptions: Array<{ value: ReviewFilter; label: string; count: number }> = [
+    { value: "all", label: t("Todos"), count: review.files.length },
+    { value: "staged", label: "Staged", count: counts.staged },
+    { value: "unstaged", label: "Unstaged", count: counts.unstaged },
+    { value: "untracked", label: "Untracked", count: counts.untracked }
+  ];
+
+  return (
+    <>
+      {error ? (
+        <div className="inline-warning">
+          <AlertTriangle size={17} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
+      <section className="repo-hero detail-hero review-hero" aria-label={t("Visualizador de revisão")}>
+        <div className="hero-left">
+          <div className="hero-icon">
+            <Search size={34} />
+          </div>
+          <div>
+            <span>{review.repo.name}</span>
+            <h2>{review.branch ?? "Detached HEAD"}</h2>
+            <p title={review.worktree.path}>{review.worktree.path}</p>
+          </div>
+        </div>
+        <div className="detail-hero-actions">
+          <button className="secondary-button" onClick={onRefresh}>
+            {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+            {t("Atualizar")}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={!selectedPath}
+            onClick={() => selectedPath && onOpen(selectedPath, "editor")}
+          >
+            <Code2 size={16} />
+            {t("Editor")}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={!selectedPath}
+            onClick={() => selectedPath && onCopy(selectedPath)}
+          >
+            <Copy size={16} />
+            {t("Copiar caminho")}
+          </button>
+        </div>
+      </section>
+
+      <section className="stats-grid detail-stats" aria-label={t("Ficheiros alterados")}>
+        <StatCard tone="amber" icon={<AlertTriangle />} label={t("Alterações")} value={review.status.total} detail={review.status.clean ? t("Sem alterações") : t("Total")} />
+        <StatCard tone="green" icon={<CheckCircle2 />} label="Staged" value={review.status.staged} detail={t("Prontas para commit")} />
+        <StatCard tone="blue" icon={<Code2 />} label="Unstaged" value={review.status.unstaged} detail={t("Alterações locais")} />
+        <StatCard tone="purple" icon={<Folder />} label="Untracked" value={review.status.untracked} detail={t("Por seguir")} />
+      </section>
+
+      <section className="panel review-panel">
+        <div className="section-header">
+          <div>
+            <h2>{t("Ficheiros alterados")}</h2>
+            <p>{t("Revisão read-only de staged, unstaged e untracked.")}</p>
+          </div>
+          <div className="review-view-toggle" role="group" aria-label={t("Modo de visualização")}>
+            {(["unified", "split"] as DiffViewMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={viewMode === mode}
+                onClick={() => setViewMode(mode)}
+              >
+                {mode === "unified" ? t("Unified") : t("Split")}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="review-layout">
+          <aside className="review-files" aria-label={t("Ficheiros alterados")}>
+            <label className="search-field review-search">
+              <Search size={16} />
+              <input
+                aria-label={t("Pesquisar ficheiros")}
+                value={query}
+                placeholder={t("Pesquisar ficheiros")}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <div className="filter-chips review-filters" role="group" aria-label={t("Filtros")}>
+              {filterOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={filter === option.value}
+                  onClick={() => setFilter(option.value)}
+                >
+                  {option.label}
+                  <span>{option.count}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="review-file-list">
+              {!review.files.length ? (
+                <div className="review-empty">
+                  <CheckCircle2 size={22} />
+                  <strong>{t("Sem alterações para revisão")}</strong>
+                  <span>{t("A worktree em foco está limpa.")}</span>
+                </div>
+              ) : null}
+              {review.files.length && !filteredFiles.length ? (
+                <div className="review-empty">
+                  <Search size={22} />
+                  <strong>{t("Sem ficheiros para os filtros atuais")}</strong>
+                </div>
+              ) : null}
+              {filteredFiles.map((file) => (
+                <button
+                  key={file.id}
+                  className={selectedFile?.id === file.id ? "review-file-item active" : "review-file-item"}
+                  type="button"
+                  aria-pressed={selectedFile?.id === file.id}
+                  onClick={() => onSelectFile(file.id)}
+                >
+                  <span className="review-file-main">
+                    <strong title={file.path}>{file.path}</strong>
+                    {file.originalPath ? <small title={file.originalPath}>{file.originalPath}</small> : null}
+                  </span>
+                  <span className="review-file-meta">
+                    <span className={`badge ${reviewModeBadgeTone(file.mode)}`}>{reviewModeLabel(file.mode, t)}</span>
+                    <span className="review-change-count">{formatReviewChangeSummary(file, t)}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <main className="review-diff-panel" aria-live="polite">
+            {selectedFile ? (
+              <>
+                <div className="review-diff-header">
+                  <div>
+                    <span className={`badge ${reviewModeBadgeTone(selectedFile.mode)}`}>{reviewModeLabel(selectedFile.mode, t)}</span>
+                    <h3 title={selectedFile.path}>{selectedFile.path}</h3>
+                    {selectedFile.originalPath ? <p title={selectedFile.originalPath}>{selectedFile.originalPath}</p> : null}
+                  </div>
+                  <div className="review-diff-actions">
+                    <span>{formatReviewChangeSummary(selectedFile, t)}</span>
+                    <button className="icon-button" type="button" title={t("Abrir no editor")} onClick={() => onOpen(joinFsPath(review.worktree.path, selectedFile.path), "editor")}>
+                      <Code2 size={16} />
+                    </button>
+                    <button className="icon-button" type="button" title={t("Copiar caminho")} onClick={() => onCopy(joinFsPath(review.worktree.path, selectedFile.path))}>
+                      <Copy size={16} />
+                    </button>
+                  </div>
+                </div>
+                {renderReviewDiff(selectedFile, viewMode, t)}
+              </>
+            ) : (
+              <div className="review-empty review-empty-main">
+                <Search size={28} />
+                <strong>{review.files.length ? t("Sem ficheiro selecionado") : t("Sem alterações para revisão")}</strong>
+                <span>{review.files.length ? t("Seleciona um ficheiro para rever o diff.") : t("A worktree em foco está limpa.")}</span>
+              </div>
+            )}
+          </main>
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -3855,7 +4353,9 @@ function WorktreeTable({
                     <td>
                       <div className="badges">
                         {worktree.isCurrent ? <span className="badge green">{t("Em foco")}</span> : null}
-                        <span className="badge blue">{worktree.branch ?? "detached"}</span>
+                        <span className={worktree.branch && !worktree.detached ? "badge blue" : "badge detached"}>
+                          {worktree.branch && !worktree.detached ? worktree.branch : t("Detached")}
+                        </span>
                         {renderWorktreeStatusBadges(worktree, true, locale)}
                       </div>
                     </td>
@@ -5281,20 +5781,40 @@ function CreateWorktreeDialog({
   defaultWorktreeDirectory: string;
   busy: boolean;
   onClose: () => void;
-  onCreate: (body: { branch: string; newBranch: boolean; name?: string; path?: string }) => void;
+  onCreate: (body: { branch: string; newBranch: boolean; name?: string; path?: string; from?: string }) => void;
 }) {
   const { t } = useI18n();
+  const baseBranchOptions = useMemo(
+    () => branches.filter((item) => !item.name.endsWith("/HEAD")),
+    [branches]
+  );
+  const preferredBaseBranch =
+    baseBranchOptions.find((item) => item.current)?.name ??
+    baseBranchOptions.find((item) => !item.isRemote && isBaseBranch(item.name))?.name ??
+    baseBranchOptions.find((item) => !item.isRemote)?.name ??
+    baseBranchOptions[0]?.name ??
+    "";
   const [branch, setBranch] = useState("");
+  const [baseBranch, setBaseBranch] = useState(preferredBaseBranch);
   const [name, setName] = useState("");
   const [targetPath, setTargetPath] = useState("");
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const branchListId = useId();
   const cleanBranchPrefix = branchPrefix.trim();
 
+  useEffect(() => {
+    if (!baseBranch && preferredBaseBranch) {
+      setBaseBranch(preferredBaseBranch);
+    }
+  }, [baseBranch, preferredBaseBranch]);
+
   function changeMode(nextMode: "existing" | "new") {
     setMode(nextMode);
     if (nextMode === "new" && !branch.trim() && cleanBranchPrefix) {
       setBranch(cleanBranchPrefix);
+    }
+    if (nextMode === "new" && !baseBranch && preferredBaseBranch) {
+      setBaseBranch(preferredBaseBranch);
     }
     if (nextMode === "existing" && branch === cleanBranchPrefix) {
       setBranch("");
@@ -5303,12 +5823,16 @@ function CreateWorktreeDialog({
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    onCreate({
+    const body: { branch: string; newBranch: boolean; name?: string; path?: string; from?: string } = {
       branch,
       newBranch: mode === "new",
       name: name || undefined,
       path: targetPath || undefined
-    });
+    };
+    if (mode === "new" && baseBranch) {
+      body.from = baseBranch;
+    }
+    onCreate(body);
   }
 
   return (
@@ -5352,6 +5876,19 @@ function CreateWorktreeDialog({
             <option key={item.name} value={item.name} />
           ))}
         </datalist>
+        {mode === "new" ? (
+          <label>
+            {t("Branch base")}
+            <select value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)}>
+              {!preferredBaseBranch ? <option value="">{t("HEAD atual")}</option> : null}
+              {baseBranchOptions.map((item) => (
+                <option key={item.name} value={item.name}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label>
           {t("Nome da pasta")}
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("opcional")} />
@@ -5887,6 +6424,11 @@ function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
 }
 
+function joinFsPath(root: string, relativePath: string) {
+  const separator = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${separator}${relativePath.replace(/^[\\/]+/, "")}`;
+}
+
 function prefixedPlaceholder(prefix: string, suffix: string) {
   const cleanPrefix = prefix.trim();
   if (!cleanPrefix) return `feature/${suffix}`;
@@ -5924,6 +6466,7 @@ function isAppPage(value: unknown): value is AppPage {
     value === "workflows" ||
     value === "worktrees" ||
     value === "branches" ||
+    value === "review" ||
     value === "operations" ||
     value === "integrations" ||
     value === "privacy" ||

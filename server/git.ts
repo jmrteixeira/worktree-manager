@@ -5,11 +5,16 @@ import path from "node:path";
 import type {
   BranchRecord,
   CommitInfo,
+  DiffMode,
   GitFileStatus,
   GitStatusSummary,
   LocalBranchWorktreeResult,
   RepoDetail,
   RepoRecord,
+  ReviewDiffFile,
+  ReviewDiffHunk,
+  ReviewDiffLine,
+  ReviewDiffResponse,
   RepoSummary,
   WorktreeRecord
 } from "../src/types";
@@ -43,6 +48,7 @@ type WorktreeCreateOptions = {
   newBranch: boolean;
   name?: string | null;
   path?: string | null;
+  from?: string | null;
   basePath?: string | null;
 };
 
@@ -51,6 +57,8 @@ type BranchSource =
   | { kind: "remote"; branch: string; localBranch: string };
 
 const MAX_OPERATION_LOG_CHARS = 20_000;
+const MAX_REVIEW_FILE_BYTES = 220_000;
+const MAX_REVIEW_UNTRACKED_LINES = 4_000;
 
 export class GitCommandError extends Error {
   constructor(readonly result: GitResult) {
@@ -399,7 +407,16 @@ export async function createWorktree(
   if (options.newBranch) {
     await assertValidBranchName(repo.path, branch, store);
     await assertBranchDoesNotExist(repo.path, branch, store);
-    args = ["worktree", "add", "-b", branch, targetPath];
+    const startPoint = options.from?.trim();
+    if (startPoint) {
+      const remoteExists = await remoteBranchExists(repo.path, startPoint, store);
+      await assertRefExists(repo.path, startPoint, store);
+      args = remoteExists
+        ? ["worktree", "add", "-b", branch, "--track", targetPath, startPoint]
+        : ["worktree", "add", "-b", branch, targetPath, startPoint];
+    } else {
+      args = ["worktree", "add", "-b", branch, targetPath];
+    }
   } else {
     const source = await resolveBranchSource(repo.path, branch, store);
     if (source.kind === "local") {
@@ -758,6 +775,251 @@ export async function getRepoDetail(
     worktrees,
     lastUpdatedAt: new Date().toISOString()
   };
+}
+
+export async function getRepoReview(
+  repo: RepoRecord,
+  focusedPath = repo.path,
+  store?: AppStore
+): Promise<ReviewDiffResponse> {
+  const [worktrees, statusResult, branch] = await Promise.all([
+    getWorktrees(repo.path, focusedPath, store),
+    runGit(focusedPath, ["status", "--porcelain=v1", "-uall"], store, { record: false }),
+    getCheckedOutBranch(focusedPath, store)
+  ]);
+  const worktree =
+    worktrees.find((item) => path.resolve(item.path) === path.resolve(focusedPath)) ??
+    worktrees.find((item) => item.isCurrent);
+  if (!worktree) {
+    throw new Error("A worktree selecionada não pertence a este repositório.");
+  }
+
+  const statusFiles = parseStatusPorcelain(statusResult.stdout);
+  const files = (
+    await Promise.all(
+      statusFiles.flatMap((file) =>
+        reviewModesForFile(file).map((mode) => buildReviewDiffFile(focusedPath, file, mode, store))
+      )
+    )
+  ).sort((left, right) => {
+    const pathCompare = left.path.localeCompare(right.path);
+    if (pathCompare !== 0) return pathCompare;
+    return reviewModeOrder(left.mode) - reviewModeOrder(right.mode);
+  });
+
+  return {
+    repo,
+    worktree,
+    branch,
+    status: summarizeFileStatuses(statusFiles),
+    files,
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function reviewModesForFile(file: GitFileStatus): DiffMode[] {
+  if (file.indexStatus === "?" && file.worktreeStatus === "?") return ["untracked"];
+
+  const modes: DiffMode[] = [];
+  if (file.indexStatus.trim()) modes.push("staged");
+  if (file.worktreeStatus.trim()) modes.push("unstaged");
+  return modes;
+}
+
+function reviewModeOrder(mode: DiffMode): number {
+  if (mode === "staged") return 0;
+  if (mode === "unstaged") return 1;
+  return 2;
+}
+
+async function buildReviewDiffFile(
+  worktreePath: string,
+  file: GitFileStatus,
+  mode: DiffMode,
+  store?: AppStore
+): Promise<ReviewDiffFile> {
+  if (mode === "untracked") {
+    return buildUntrackedReviewFile(worktreePath, file);
+  }
+
+  const args = mode === "staged"
+    ? ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", file.path]
+    : ["diff", "--no-ext-diff", "--unified=3", "--", file.path];
+  const result = await runGit(worktreePath, args, store, {
+    record: false,
+    allowFailure: true,
+    timeoutMs: 120_000
+  });
+
+  if (result.exitCode !== 0) {
+    return emptyReviewFile(file, mode, result.stderr.trim() || "Não foi possível gerar o diff.");
+  }
+
+  const parsed = parseUnifiedDiff(result.stdout);
+  return {
+    ...emptyReviewFile(file, mode, null),
+    ...parsed
+  };
+}
+
+async function buildUntrackedReviewFile(worktreePath: string, file: GitFileStatus): Promise<ReviewDiffFile> {
+  const absolutePath = path.resolve(worktreePath, file.path);
+  if (!isPathInside(worktreePath, absolutePath)) {
+    return emptyReviewFile(file, "untracked", "O ficheiro está fora da worktree.");
+  }
+
+  const baseFile = emptyReviewFile(file, "untracked", null);
+  try {
+    const stat = await fs.stat(absolutePath);
+    if (!stat.isFile()) {
+      return { ...baseFile, error: "O caminho não é um ficheiro regular." };
+    }
+    if (stat.size > MAX_REVIEW_FILE_BYTES) {
+      return { ...baseFile, tooLarge: true, error: "Ficheiro demasiado grande para pré-visualização." };
+    }
+
+    const content = await fs.readFile(absolutePath);
+    if (isBinaryBuffer(content)) {
+      return { ...baseFile, binary: true, error: "Ficheiro binário não pré-visualizável." };
+    }
+
+    const allLines = content.toString("utf8").replace(/\r\n/g, "\n").split("\n");
+    if (allLines.at(-1) === "") allLines.pop();
+    const lines = allLines.slice(0, MAX_REVIEW_UNTRACKED_LINES);
+    const truncated = allLines.length > lines.length;
+    const diffLines: ReviewDiffLine[] = lines.map((line, index) => ({
+      type: "add",
+      oldLineNumber: null,
+      newLineNumber: index + 1,
+      content: line
+    }));
+
+    const hunk: ReviewDiffHunk = {
+      header: `@@ -0,0 +1,${diffLines.length} @@`,
+      oldStart: 0,
+      oldLines: 0,
+      newStart: 1,
+      newLines: diffLines.length,
+      lines: diffLines
+    };
+
+    return {
+      ...baseFile,
+      truncated,
+      additions: diffLines.length,
+      hunks: diffLines.length ? [hunk] : []
+    };
+  } catch (error) {
+    return { ...baseFile, error: errorMessage(error) };
+  }
+}
+
+function emptyReviewFile(file: GitFileStatus, mode: DiffMode, error: string | null): ReviewDiffFile {
+  return {
+    id: `${mode}:${file.path}`,
+    path: file.path,
+    originalPath: file.originalPath,
+    mode,
+    statusLabel: file.label,
+    binary: false,
+    tooLarge: false,
+    truncated: false,
+    additions: 0,
+    deletions: 0,
+    hunks: [],
+    error
+  };
+}
+
+export function parseUnifiedDiff(stdout: string): Pick<
+  ReviewDiffFile,
+  "hunks" | "additions" | "deletions" | "binary" | "tooLarge" | "truncated" | "error"
+> {
+  if (/^Binary files /m.test(stdout) || /^GIT binary patch$/m.test(stdout)) {
+    return {
+      hunks: [],
+      additions: 0,
+      deletions: 0,
+      binary: true,
+      tooLarge: false,
+      truncated: false,
+      error: "Ficheiro binário não pré-visualizável."
+    };
+  }
+
+  const hunks: ReviewDiffHunk[] = [];
+  let currentHunk: ReviewDiffHunk | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+  let additions = 0;
+  let deletions = 0;
+
+  for (const rawLine of stdout.replace(/\r\n/g, "\n").split("\n")) {
+    const hunkMatch = rawLine.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$/);
+    if (hunkMatch) {
+      currentHunk = {
+        header: rawLine,
+        oldStart: Number(hunkMatch[1]),
+        oldLines: Number(hunkMatch[2] ?? "1"),
+        newStart: Number(hunkMatch[3]),
+        newLines: Number(hunkMatch[4] ?? "1"),
+        lines: []
+      };
+      oldLine = currentHunk.oldStart;
+      newLine = currentHunk.newStart;
+      hunks.push(currentHunk);
+      continue;
+    }
+
+    if (!currentHunk) continue;
+
+    if (rawLine.startsWith("\\ No newline")) {
+      currentHunk.lines.push({ type: "meta", oldLineNumber: null, newLineNumber: null, content: rawLine });
+      continue;
+    }
+
+    const marker = rawLine[0] ?? " ";
+    const content = rawLine.slice(1);
+    if (marker === "+") {
+      currentHunk.lines.push({ type: "add", oldLineNumber: null, newLineNumber: newLine, content });
+      newLine += 1;
+      additions += 1;
+      continue;
+    }
+    if (marker === "-") {
+      currentHunk.lines.push({ type: "delete", oldLineNumber: oldLine, newLineNumber: null, content });
+      oldLine += 1;
+      deletions += 1;
+      continue;
+    }
+    if (marker === " ") {
+      currentHunk.lines.push({ type: "context", oldLineNumber: oldLine, newLineNumber: newLine, content });
+      oldLine += 1;
+      newLine += 1;
+      continue;
+    }
+
+    currentHunk.lines.push({ type: "meta", oldLineNumber: null, newLineNumber: null, content: rawLine });
+  }
+
+  return {
+    hunks,
+    additions,
+    deletions,
+    binary: false,
+    tooLarge: false,
+    truncated: false,
+    error: null
+  };
+}
+
+function isBinaryBuffer(buffer: Buffer): boolean {
+  return buffer.subarray(0, Math.min(buffer.length, 8000)).includes(0);
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return relative === "" || (Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 export async function getRepoSummary(
@@ -1237,6 +1499,10 @@ function firstLine(value: string): string {
     .map((line) => line.trim())
     .find(Boolean)
     ?.slice(0, 240) ?? "";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Erro inesperado.";
 }
 
 function summarizeGitResult(result: GitResult): string {

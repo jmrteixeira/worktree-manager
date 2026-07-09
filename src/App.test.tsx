@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
     summary: vi.fn(),
     worktrees: vi.fn(),
     detail: vi.fn(),
+    review: vi.fn(),
     branches: vi.fn(),
     listFs: vi.fn(),
     pickFolder: vi.fn(),
@@ -165,6 +166,35 @@ describe("App", () => {
       entries: []
     });
     mockedApi.pickFolder.mockResolvedValue(null);
+    mockedApi.review.mockResolvedValue({
+      repo: {
+        id: "repo-1",
+        name: "WorktreeManager",
+        path: "/tmp/WorktreeManager",
+        lastOpenedAt: "2026-07-01T10:00:00.000Z"
+      },
+      worktree: {
+        id: "wt-1",
+        path: "/tmp/WorktreeManager",
+        branch: "main",
+        head: "a1b2c3d",
+        isCurrent: true,
+        detached: false,
+        bare: false,
+        lastCommit: null
+      },
+      branch: "main",
+      status: {
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        conflicted: 0,
+        total: 0,
+        clean: true
+      },
+      files: [],
+      generatedAt: "2026-07-01T10:00:00.000Z"
+    });
   });
 
   it("renders the empty state when there are no repositories", async () => {
@@ -490,6 +520,124 @@ describe("App", () => {
     expect(screen.getByText("origin/feature/detail")).toBeInTheDocument();
     expect(screen.getByText("Stashes")).toBeInTheDocument();
     expect(screen.getByText("README.md")).toBeInTheDocument();
+  });
+
+  it("renders the review page with filters and split diff", async () => {
+    const repo = {
+      id: "repo-1",
+      name: "WorktreeManager",
+      path: "/tmp/WorktreeManager",
+      lastOpenedAt: "2026-07-01T10:00:00.000Z"
+    };
+    const worktree = {
+      id: "wt-1",
+      path: "/tmp/WorktreeManager",
+      branch: "main",
+      head: "a1b2c3d",
+      isCurrent: true,
+      detached: false,
+      bare: false,
+      lastCommit: null
+    };
+    mockedApi.listRepos.mockResolvedValue([repo]);
+    mockedApi.summary.mockResolvedValue({
+      repo,
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: repo.path,
+      currentBranch: "main",
+      commitCount: 42,
+      branchCount: 2,
+      worktreeCount: 1,
+      changedFileCount: 2,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.worktrees.mockResolvedValue([worktree]);
+    mockedApi.branches.mockResolvedValue([]);
+    mockedApi.review.mockResolvedValue({
+      repo,
+      worktree,
+      branch: "main",
+      status: {
+        staged: 0,
+        unstaged: 1,
+        untracked: 1,
+        conflicted: 0,
+        total: 2,
+        clean: false
+      },
+      files: [
+        {
+          id: "unstaged:src/App.tsx",
+          path: "src/App.tsx",
+          originalPath: null,
+          mode: "unstaged",
+          statusLabel: "Modificado",
+          binary: false,
+          tooLarge: false,
+          truncated: false,
+          additions: 1,
+          deletions: 1,
+          error: null,
+          hunks: [
+            {
+              header: "@@ -1,3 +1,3 @@",
+              oldStart: 1,
+              oldLines: 3,
+              newStart: 1,
+              newLines: 3,
+              lines: [
+                { type: "context", oldLineNumber: 1, newLineNumber: 1, content: "function App() {" },
+                { type: "delete", oldLineNumber: 2, newLineNumber: null, content: "  return null;" },
+                { type: "add", oldLineNumber: null, newLineNumber: 2, content: "  return <main />;" }
+              ]
+            }
+          ]
+        },
+        {
+          id: "untracked:docs/review.md",
+          path: "docs/review.md",
+          originalPath: null,
+          mode: "untracked",
+          statusLabel: "Por seguir",
+          binary: false,
+          tooLarge: false,
+          truncated: false,
+          additions: 1,
+          deletions: 0,
+          error: null,
+          hunks: [
+            {
+              header: "@@ -0,0 +1,1 @@",
+              oldStart: 0,
+              oldLines: 0,
+              newStart: 1,
+              newLines: 1,
+              lines: [
+                { type: "add", oldLineNumber: null, newLineNumber: 1, content: "review notes" }
+              ]
+            }
+          ]
+        }
+      ],
+      generatedAt: "2026-07-01T10:00:00.000Z"
+    });
+
+    render(<App />);
+
+    await screen.findByText("Repos ativos");
+    fireEvent.click(screen.getByRole("button", { name: "Revisão" }));
+
+    await waitFor(() => expect(mockedApi.review).toHaveBeenCalledWith("repo-1", "/tmp/WorktreeManager"));
+    await waitFor(() => expect(screen.getAllByText("src/App.tsx").length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText((content) => content.includes("return <main />;"))).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Untracked/ })[0]);
+    expect(screen.getAllByText("docs/review.md").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryAllByText("src/App.tsx")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    expect(screen.getByRole("region", { name: "Split diff docs/review.md" })).toBeInTheDocument();
   });
 
   it("persists and applies the selected theme", async () => {
@@ -818,11 +966,15 @@ describe("App", () => {
 
     await waitFor(() => expect(mockedApi.summary).toHaveBeenCalledWith("repo-1", undefined));
     await waitFor(() => expect(mockedApi.summary).toHaveBeenCalledWith("repo-2", undefined));
-    expect((await screen.findAllByText("Área de trabalho")).length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText("Área de trabalho")).toBeInTheDocument();
     expect(screen.getByText("Repos ativos")).toBeInTheDocument();
+    const repoSelector = screen.getByRole("combobox", { name: "Escolher repositório em foco" });
+    expect(repoSelector).toHaveValue("repo-1");
     expect(screen.getAllByText("Frontend").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Backend").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("develop")).toBeInTheDocument();
+    fireEvent.change(repoSelector, { target: { value: "repo-2" } });
+    expect(repoSelector).toHaveValue("repo-2");
   });
 
   it("uses the persisted focused worktree path when loading repo data", async () => {
@@ -998,6 +1150,79 @@ describe("App", () => {
         newBranch: false,
         name: undefined,
         path: undefined
+      })
+    );
+  });
+
+  it("creates a worktree from a new branch with an explicit base branch", async () => {
+    window.localStorage.setItem("worktree-manager.activeRepoIds", JSON.stringify(["repo-1"]));
+    mockedApi.listRepos.mockResolvedValue([
+      {
+        id: "repo-1",
+        name: "WorktreeManager",
+        path: "/tmp/WorktreeManager",
+        lastOpenedAt: "2026-07-01T10:00:00.000Z"
+      }
+    ]);
+    mockedApi.summary.mockResolvedValue({
+      repo: {
+        id: "repo-1",
+        name: "WorktreeManager",
+        path: "/tmp/WorktreeManager",
+        lastOpenedAt: "2026-07-01T10:00:00.000Z"
+      },
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: "/tmp/WorktreeManager",
+      currentBranch: "main",
+      commitCount: 42,
+      branchCount: 2,
+      worktreeCount: 1,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.worktrees.mockResolvedValue([]);
+    mockedApi.branches.mockResolvedValue([
+      {
+        name: "main",
+        current: true,
+        upstream: null,
+        isRemote: false,
+        head: "a1b2c3d",
+        lastCommit: null
+      },
+      {
+        name: "develop",
+        current: false,
+        upstream: null,
+        isRemote: false,
+        head: "d4e5f6a",
+        lastCommit: null
+      }
+    ]);
+    mockedApi.createWorktree.mockResolvedValue({
+      path: "/tmp/WorktreeManager-feature-new-area"
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Worktrees" }));
+    fireEvent.click(screen.getAllByRole("button", { name: /Nova Worktree/ })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Nova branch" }));
+    fireEvent.change(screen.getByLabelText("Nova branch"), {
+      target: { value: "feature/new-area" }
+    });
+    fireEvent.change(screen.getByLabelText("Branch base"), {
+      target: { value: "develop" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Criar" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createWorktree).toHaveBeenCalledWith("repo-1", {
+        branch: "feature/new-area",
+        newBranch: true,
+        name: undefined,
+        path: undefined,
+        from: "develop"
       })
     );
   });

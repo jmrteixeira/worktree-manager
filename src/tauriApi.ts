@@ -12,6 +12,7 @@ import type {
   PickFolderResponse,
   RepoDetail,
   RepoRecord,
+  ReviewDiffResponse,
   RepoSummary,
   WorktreeHandoffResult,
   WorktreeRecord
@@ -64,7 +65,10 @@ export const tauriApi = {
   detail(repoId: string, worktreePath?: string) {
     return invoke<RepoDetail>("repo_detail", { repoId, worktreePath });
   },
-  createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string }) {
+  review(repoId: string, worktreePath?: string) {
+    return invoke<ReviewDiffResponse>("repo_review", { repoId, worktreePath });
+  },
+  createWorktree(repoId: string, body: { branch: string; newBranch: boolean; name?: string; path?: string; from?: string }) {
     return invoke<{ path: string }>("create_worktree", { repoId, body });
   },
   removeWorktree(repoId: string, worktreeId: string, confirm: string) {

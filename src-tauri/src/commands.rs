@@ -5,8 +5,8 @@ use crate::{
         CreateWorktreeBody, DeleteBranchBody, DiagnosticEventInput, DiagnosticsSnapshot,
         EditorIntegrationId, FsEntry, FsListResponse, IntegrationCatalog, IntegrationRecord,
         LocalBranchWorktreeResult, MoveLocalBranchBody, OkResponse, OpenTarget, OperationRecord,
-        OperationStats, RepoDetail, RepoRecord, RepoSummary, TerminalIntegrationId,
-        WorktreeHandoffResult, WorktreeRecord,
+        OperationStats, RepoDetail, RepoRecord, RepoSummary, ReviewDiffResponse,
+        TerminalIntegrationId, WorktreeHandoffResult, WorktreeRecord,
     },
     store::{absolute_path, now_iso, path_string, AppState},
 };
@@ -226,6 +226,22 @@ pub fn repo_detail(
 }
 
 #[tauri::command]
+pub fn repo_review(
+    repo_id: String,
+    worktree_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ReviewDiffResponse, String> {
+    let app_state = state.inner();
+    let repo = repo_or_error(app_state, &repo_id)?;
+    let focused_path = git::resolve_repo_worktree_path(
+        Path::new(&repo.path),
+        worktree_path.as_deref(),
+        Some(app_state),
+    )?;
+    git::get_repo_review(&repo, &focused_path, Some(app_state))
+}
+
+#[tauri::command]
 pub fn create_worktree(
     repo_id: String,
     body: CreateWorktreeBody,
@@ -244,6 +260,7 @@ pub fn create_worktree(
         body.new_branch,
         body.name.as_deref(),
         body.path.as_deref(),
+        body.from.as_deref(),
         Some(settings.worktree_directory.as_str()),
         app_state,
     )?;

@@ -12,6 +12,7 @@ import {
   defaultWorktreeName,
   getBranches,
   getRepoDetail,
+  getRepoReview,
   getRepoSummary,
   getWorktrees,
   handoffWorktreeBranchToLocal,
@@ -209,6 +210,80 @@ describe("api", () => {
       clean: false
     });
     expect(detail.worktrees).toHaveLength(1);
+  });
+
+  it("returns review diffs for staged, unstaged and untracked files", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await fs.appendFile(path.join(repo.path, "README.md"), "dirty work\n");
+    await fs.writeFile(path.join(repo.path, "staged.txt"), "staged\n");
+    await fs.writeFile(path.join(repo.path, "notes.txt"), "untracked\n");
+    await git(repo.path, "add", "staged.txt");
+
+    const review = await getRepoReview(repo, repo.path, store);
+
+    expect(review).toMatchObject({
+      branch: "main",
+      status: {
+        staged: 1,
+        unstaged: 1,
+        untracked: 1,
+        total: 3,
+        clean: false
+      }
+    });
+    const readme = review.files.find((file) => file.path === "README.md" && file.mode === "unstaged");
+    const staged = review.files.find((file) => file.path === "staged.txt" && file.mode === "staged");
+    const untracked = review.files.find((file) => file.path === "notes.txt" && file.mode === "untracked");
+
+    expect(readme).toMatchObject({
+      additions: 1,
+      deletions: 0,
+      binary: false,
+      error: null
+    });
+    expect(readme?.hunks[0].lines.some((line) => line.type === "add" && line.content === "dirty work")).toBe(true);
+    expect(staged).toMatchObject({
+      additions: 1,
+      deletions: 0,
+      error: null
+    });
+    expect(untracked).toMatchObject({
+      additions: 1,
+      deletions: 0,
+      mode: "untracked",
+      error: null
+    });
+    expect(untracked?.hunks[0].lines).toEqual([
+      {
+        type: "add",
+        oldLineNumber: null,
+        newLineNumber: 1,
+        content: "untracked"
+      }
+    ]);
+  });
+
+  it("marks binary and large untracked files as non-previewable in review", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await fs.writeFile(path.join(repo.path, "asset.bin"), Buffer.from([0, 1, 2, 3]));
+    await fs.writeFile(path.join(repo.path, "large.txt"), `${"x".repeat(230_000)}\n`);
+
+    const review = await getRepoReview(repo, repo.path, store);
+    const binary = review.files.find((file) => file.path === "asset.bin");
+    const large = review.files.find((file) => file.path === "large.txt");
+
+    expect(binary).toMatchObject({
+      mode: "untracked",
+      binary: true,
+      error: "Ficheiro binário não pré-visualizável."
+    });
+    expect(large).toMatchObject({
+      mode: "untracked",
+      tooLarge: true,
+      error: "Ficheiro demasiado grande para pré-visualização."
+    });
   });
 
   it("counts repository stashes in summary and detail data", async () => {
@@ -467,6 +542,27 @@ describe("api", () => {
     expect((await fs.stat(basePath)).isDirectory()).toBe(true);
     const branch = await git(targetPath, "branch", "--show-current");
     expect(branch.stdout.trim()).toBe("feature/default-location");
+  });
+
+  it("creates a new worktree branch from an explicit base branch", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    await runGit(repo.path, ["switch", "-c", "develop"], store);
+    await fs.writeFile(path.join(repo.path, "develop.txt"), "base branch\n");
+    await runGit(repo.path, ["add", "develop.txt"], store);
+    await runGit(repo.path, ["commit", "-m", "develop base"], store);
+    await runGit(repo.path, ["switch", "main"], store);
+
+    const targetPath = await createWorktree(
+      repo,
+      { branch: "feature/from-develop", newBranch: true, from: "develop" },
+      store
+    );
+
+    const branch = await git(targetPath, "branch", "--show-current");
+    const subject = await git(targetPath, "log", "-1", "--format=%s");
+    expect(branch.stdout.trim()).toBe("feature/from-develop");
+    expect(subject.stdout.trim()).toBe("develop base");
   });
 
   it("blocks checkout when the branch is already checked out in another worktree", async () => {

@@ -4,6 +4,7 @@ import {
   defaultWorktreeName,
   parseBranchRefs,
   parseStatusPorcelain,
+  parseUnifiedDiff,
   parseWorktreePorcelain,
   sanitizeFilePart
 } from "../server/git";
@@ -107,5 +108,58 @@ describe("git parsing", () => {
         label: "Renomeado"
       }
     ]);
+  });
+
+  it("parses unified diff hunks and line metadata", () => {
+    const diff = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1,3 +1,4 @@",
+      " import x from 'x';",
+      "-const value = 1;",
+      "+const value = 2;",
+      "+const extra = true;",
+      " export { value };",
+      "\\ No newline at end of file"
+    ].join("\n");
+
+    const parsed = parseUnifiedDiff(diff);
+
+    expect(parsed).toMatchObject({
+      additions: 2,
+      deletions: 1,
+      binary: false,
+      error: null
+    });
+    expect(parsed.hunks).toHaveLength(1);
+    expect(parsed.hunks[0]).toMatchObject({
+      header: "@@ -1,3 +1,4 @@",
+      oldStart: 1,
+      oldLines: 3,
+      newStart: 1,
+      newLines: 4
+    });
+    expect(parsed.hunks[0].lines).toEqual([
+      { type: "context", oldLineNumber: 1, newLineNumber: 1, content: "import x from 'x';" },
+      { type: "delete", oldLineNumber: 2, newLineNumber: null, content: "const value = 1;" },
+      { type: "add", oldLineNumber: null, newLineNumber: 2, content: "const value = 2;" },
+      { type: "add", oldLineNumber: null, newLineNumber: 3, content: "const extra = true;" },
+      { type: "context", oldLineNumber: 3, newLineNumber: 4, content: "export { value };" },
+      { type: "meta", oldLineNumber: null, newLineNumber: null, content: "\\ No newline at end of file" }
+    ]);
+  });
+
+  it("marks binary unified diffs as non-previewable", () => {
+    const parsed = parseUnifiedDiff("Binary files a/image.png and b/image.png differ\n");
+
+    expect(parsed).toMatchObject({
+      binary: true,
+      hunks: [],
+      additions: 0,
+      deletions: 0,
+      error: "Ficheiro binário não pré-visualizável."
+    });
   });
 });

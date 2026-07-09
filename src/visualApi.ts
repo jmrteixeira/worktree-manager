@@ -10,6 +10,7 @@ import type {
   OperationRecord,
   RepoDetail,
   RepoRecord,
+  ReviewDiffResponse,
   RepoSummary,
   WorktreeHandoffResult,
   WorktreeRecord
@@ -426,6 +427,72 @@ export const visualApi = {
           ],
       worktrees,
       lastUpdatedAt: "2026-07-07T18:00:00.000Z"
+    };
+  },
+  async review(_repoId: string, worktreePath?: string): Promise<ReviewDiffResponse> {
+    const worktree = worktreeForPath(worktreePath ?? authPath);
+    const status = worktree.status ?? cleanStatus;
+    return {
+      repo,
+      worktree,
+      branch: worktree.branch,
+      status,
+      generatedAt: "2026-07-07T18:00:00.000Z",
+      files: status.clean
+        ? []
+        : [
+            {
+              id: "unstaged:src/App.tsx",
+              path: "src/App.tsx",
+              originalPath: null,
+              mode: "unstaged",
+              statusLabel: "Modificado",
+              binary: false,
+              tooLarge: false,
+              truncated: false,
+              additions: 2,
+              deletions: 1,
+              error: null,
+              hunks: [
+                {
+                  header: "@@ -10,3 +10,4 @@",
+                  oldStart: 10,
+                  oldLines: 3,
+                  newStart: 10,
+                  newLines: 4,
+                  lines: [
+                    { type: "context", oldLineNumber: 10, newLineNumber: 10, content: "function App() {" },
+                    { type: "delete", oldLineNumber: 11, newLineNumber: null, content: "  return null;" },
+                    { type: "add", oldLineNumber: null, newLineNumber: 11, content: "  return <ReviewPage />;" },
+                    { type: "add", oldLineNumber: null, newLineNumber: 12, content: "}" }
+                  ]
+                }
+              ]
+            },
+            {
+              id: "untracked:docs/visual-e2e.md",
+              path: "docs/visual-e2e.md",
+              originalPath: null,
+              mode: "untracked",
+              statusLabel: "Por seguir",
+              binary: false,
+              tooLarge: false,
+              truncated: false,
+              additions: 1,
+              deletions: 0,
+              error: null,
+              hunks: [
+                {
+                  header: "@@ -0,0 +1,1 @@",
+                  oldStart: 0,
+                  oldLines: 0,
+                  newStart: 1,
+                  newLines: 1,
+                  lines: [{ type: "add", oldLineNumber: null, newLineNumber: 1, content: "Visual review checklist" }]
+                }
+              ]
+            }
+          ]
     };
   },
   async createWorktree(): Promise<{ path: string }> {

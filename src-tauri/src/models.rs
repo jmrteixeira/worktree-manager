@@ -96,6 +96,54 @@ pub struct RepoDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReviewDiffLine {
+    pub r#type: String,
+    pub old_line_number: Option<usize>,
+    pub new_line_number: Option<usize>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDiffHunk {
+    pub header: String,
+    pub old_start: usize,
+    pub old_lines: usize,
+    pub new_start: usize,
+    pub new_lines: usize,
+    pub lines: Vec<ReviewDiffLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDiffFile {
+    pub id: String,
+    pub path: String,
+    pub original_path: Option<String>,
+    pub mode: String,
+    pub status_label: String,
+    pub binary: bool,
+    pub too_large: bool,
+    pub truncated: bool,
+    pub additions: usize,
+    pub deletions: usize,
+    pub hunks: Vec<ReviewDiffHunk>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDiffResponse {
+    pub repo: RepoRecord,
+    pub worktree: WorktreeRecord,
+    pub branch: Option<String>,
+    pub status: GitStatusSummary,
+    pub files: Vec<ReviewDiffFile>,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorktreeHandoffResult {
     pub branch: String,
     pub local_path: String,
@@ -352,6 +400,7 @@ pub struct CreateWorktreeBody {
     pub new_branch: bool,
     pub name: Option<String>,
     pub path: Option<String>,
+    pub from: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

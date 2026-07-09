@@ -20,6 +20,7 @@ pub fn run() {
             commands::repo_summary,
             commands::repo_worktrees,
             commands::repo_detail,
+            commands::repo_review,
             commands::create_worktree,
             commands::remove_worktree,
             commands::handoff_worktree_to_local,
