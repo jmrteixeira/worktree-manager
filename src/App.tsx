@@ -4343,7 +4343,7 @@ function WorktreeTable({
                   !isLocalWorkspace || !worktree.branch || worktree.detached || worktree.bare || isBaseBranch(worktree.branch);
 
                 return (
-                  <tr key={worktree.id}>
+                  <tr key={worktree.id} className={worktree.isCurrent ? "worktree-row-focused" : undefined}>
                     <td>
                       <button className="path-cell path-button" title={worktree.path} onClick={() => onInspect(worktree)}>
                         {worktree.isCurrent ? <Home size={16} /> : <GitFork size={16} />}
