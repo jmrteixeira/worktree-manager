@@ -9,6 +9,7 @@ vi.mock("./api", () => ({
     operations: vi.fn(),
     summary: vi.fn(),
     worktrees: vi.fn(),
+    archivedWorktrees: vi.fn(),
     detail: vi.fn(),
     review: vi.fn(),
     branches: vi.fn(),
@@ -22,6 +23,8 @@ vi.mock("./api", () => ({
     recordDiagnosticEvent: vi.fn(),
     createWorktree: vi.fn(),
     removeWorktree: vi.fn(),
+    archiveWorktree: vi.fn(),
+    restoreWorktree: vi.fn(),
     handoffWorktreeToLocal: vi.fn(),
     moveLocalBranchToWorktree: vi.fn(),
     createBranch: vi.fn(),
@@ -130,6 +133,16 @@ describe("App", () => {
     document.documentElement.removeAttribute("data-theme-preference");
     document.documentElement.style.colorScheme = "";
     mockedApi.operations.mockResolvedValue([]);
+    mockedApi.archivedWorktrees.mockResolvedValue([]);
+    mockedApi.archiveWorktree.mockResolvedValue({
+      repoId: "repo-1",
+      worktreeId: "wt-feature",
+      path: "/tmp/WorktreeManager-feature",
+      branch: "feature/test",
+      head: "d4e5f6a",
+      archivedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.restoreWorktree.mockResolvedValue(undefined);
     mockedApi.diagnostics.mockResolvedValue(defaultDiagnostics);
     mockedApi.integrations.mockResolvedValue(defaultIntegrationCatalog);
     mockedApi.recordDiagnosticEvent.mockResolvedValue({
@@ -417,6 +430,94 @@ describe("App", () => {
     await waitFor(() => expect(screen.queryByText("Copiar caminho")).not.toBeInTheDocument());
   });
 
+  it("archives and restores worktrees without removing them from disk", async () => {
+    const repo = {
+      id: "repo-1",
+      name: "WorktreeManager",
+      path: "/tmp/WorktreeManager",
+      lastOpenedAt: "2026-07-01T10:00:00.000Z"
+    };
+    const localWorktree = {
+      id: "wt-local",
+      path: repo.path,
+      branch: "main",
+      head: "a1b2c3d",
+      isCurrent: true,
+      detached: false,
+      bare: false,
+      status: {
+        staged: 0,
+        unstaged: 1,
+        untracked: 1,
+        conflicted: 0,
+        total: 2,
+        clean: false
+      },
+      lastCommit: null
+    };
+    const featureWorktree = {
+      id: "wt-feature",
+      path: "/tmp/WorktreeManager-feature-archive",
+      branch: "feature/archive",
+      head: "d4e5f6a",
+      isCurrent: false,
+      detached: false,
+      bare: false,
+      lastCommit: null
+    };
+    const archivedRecord = {
+      repoId: repo.id,
+      worktreeId: featureWorktree.id,
+      path: featureWorktree.path,
+      branch: featureWorktree.branch,
+      head: featureWorktree.head,
+      archivedAt: "2026-07-01T10:00:00.000Z"
+    };
+    let archived = false;
+
+    mockedApi.listRepos.mockResolvedValue([repo]);
+    mockedApi.summary.mockImplementation(async () => ({
+      repo,
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: repo.path,
+      currentBranch: "main",
+      commitCount: 42,
+      branchCount: 2,
+      worktreeCount: archived ? 1 : 2,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    }));
+    mockedApi.worktrees.mockImplementation(async () => (archived ? [localWorktree] : [localWorktree, featureWorktree]));
+    mockedApi.archivedWorktrees.mockImplementation(async () => (archived ? [archivedRecord] : []));
+    mockedApi.archiveWorktree.mockImplementation(async () => {
+      archived = true;
+      return archivedRecord;
+    });
+    mockedApi.restoreWorktree.mockImplementation(async () => {
+      archived = false;
+    });
+    mockedApi.branches.mockResolvedValue([]);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Worktrees" }));
+    expect(await screen.findByText(featureWorktree.path)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByTitle("Ações")[1]);
+    fireEvent.click(screen.getByText("Arquivar"));
+
+    await waitFor(() => expect(mockedApi.archiveWorktree).toHaveBeenCalledWith("repo-1", "wt-feature"));
+    expect(await screen.findByText("Worktree arquivada")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restaurar" })).toBeInTheDocument();
+    expect(screen.getByText(featureWorktree.path)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Restaurar" }));
+
+    await waitFor(() => expect(mockedApi.restoreWorktree).toHaveBeenCalledWith("repo-1", "wt-feature"));
+    expect(await screen.findByText("Sem worktrees arquivadas")).toBeInTheDocument();
+    expect(screen.getByText(featureWorktree.path)).toBeInTheDocument();
+  });
+
   it("opens the repository detail view from the workspace card", async () => {
     mockedApi.listRepos.mockResolvedValue([
       {
@@ -537,6 +638,14 @@ describe("App", () => {
       isCurrent: true,
       detached: false,
       bare: false,
+      status: {
+        staged: 0,
+        unstaged: 1,
+        untracked: 1,
+        conflicted: 0,
+        total: 2,
+        clean: false
+      },
       lastCommit: null
     };
     mockedApi.listRepos.mockResolvedValue([repo]);
@@ -626,8 +735,12 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("Repos ativos");
-    fireEvent.click(screen.getByRole("button", { name: "Revisão" }));
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees" }));
+    expect((await screen.findAllByText("/tmp/WorktreeManager")).length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(screen.getByTitle("Ações"));
+    fireEvent.click(screen.getByText("Rever alterações"));
 
+    expect(await screen.findByRole("dialog", { name: "Revisão" })).toBeInTheDocument();
     await waitFor(() => expect(mockedApi.review).toHaveBeenCalledWith("repo-1", "/tmp/WorktreeManager"));
     await waitFor(() => expect(screen.getAllByText("src/App.tsx").length).toBeGreaterThanOrEqual(1));
     expect(screen.getByText((content) => content.includes("return <main />;"))).toBeInTheDocument();
@@ -638,6 +751,62 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Split" }));
     expect(screen.getByRole("region", { name: "Split diff docs/review.md" })).toBeInTheDocument();
+  });
+
+  it("keeps review disabled for clean worktrees", async () => {
+    const repo = {
+      id: "repo-1",
+      name: "WorktreeManager",
+      path: "/tmp/WorktreeManager",
+      lastOpenedAt: "2026-07-01T10:00:00.000Z"
+    };
+    mockedApi.listRepos.mockResolvedValue([repo]);
+    mockedApi.summary.mockResolvedValue({
+      repo,
+      valid: true,
+      gitVersion: "git version 2.50.1",
+      focusedWorktreePath: repo.path,
+      currentBranch: "main",
+      commitCount: 42,
+      branchCount: 2,
+      worktreeCount: 1,
+      changedFileCount: 0,
+      lastUpdatedAt: "2026-07-01T10:00:00.000Z"
+    });
+    mockedApi.worktrees.mockResolvedValue([
+      {
+        id: "wt-1",
+        path: "/tmp/WorktreeManager",
+        branch: "main",
+        head: "a1b2c3d",
+        isCurrent: true,
+        detached: false,
+        bare: false,
+        status: {
+          staged: 0,
+          unstaged: 0,
+          untracked: 0,
+          conflicted: 0,
+          total: 0,
+          clean: true
+        },
+        lastCommit: null
+      }
+    ]);
+    mockedApi.branches.mockResolvedValue([]);
+
+    render(<App />);
+
+    await screen.findByText("Repos ativos");
+    fireEvent.click(screen.getByRole("button", { name: "Worktrees" }));
+    expect((await screen.findAllByText("/tmp/WorktreeManager")).length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(screen.getByTitle("Ações"));
+
+    const reviewButton = screen.getByText("Rever alterações").closest("button");
+    expect(reviewButton).not.toBeNull();
+    expect(reviewButton).toBeDisabled();
+    fireEvent.click(reviewButton!);
+    expect(mockedApi.review).not.toHaveBeenCalled();
   });
 
   it("persists and applies the selected theme", async () => {
@@ -681,7 +850,8 @@ describe("App", () => {
     fireEvent.keyDown(screen.getByLabelText("Pesquisar comandos"), { key: "Enter" });
 
     await waitFor(() => expect(screen.queryByLabelText("Pesquisar comandos")).not.toBeInTheDocument());
-    expect(await screen.findByText("Diagnóstico local")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Configurações" })).toBeInTheDocument();
+    expect(screen.getByText("Configurações da aplicação")).toBeInTheDocument();
   });
 
   it("opens a guided workflow and continues into the create worktree action", async () => {
@@ -782,6 +952,7 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Git/ }));
     fireEvent.change(screen.getByLabelText("Prefixo de branch"), {
       target: { value: "feature/" }
     });
@@ -814,8 +985,9 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Integrações" }));
-    expect(await screen.findByText("Ferramentas externas para abrir worktrees")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Integrações/ }));
+    expect((await screen.findAllByText("Ferramentas externas para abrir worktrees")).length).toBeGreaterThanOrEqual(1);
 
     fireEvent.click(screen.getByRole("button", { name: /Visual Studio Code/ }));
 
@@ -875,6 +1047,7 @@ describe("App", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Configurações" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Observabilidade/ }));
     expect(await screen.findByText("Diagnóstico local")).toBeInTheDocument();
     expect(screen.getByText("2 ok / 1 falhas")).toBeInTheDocument();
 

@@ -1,5 +1,6 @@
 import type {
   BranchRecord,
+  ArchivedWorktreeRecord,
   DiagnosticEventInput,
   DiagnosticsSnapshot,
   FsListResponse,
@@ -94,6 +95,9 @@ const httpApi = {
   worktrees(repoId: string, worktreePath?: string) {
     return request<WorktreeRecord[]>(withWorktreeQuery(`/api/repos/${repoId}/worktrees`, worktreePath));
   },
+  archivedWorktrees(repoId: string) {
+    return request<ArchivedWorktreeRecord[]>(`/api/repos/${repoId}/worktrees/archive`);
+  },
   detail(repoId: string, worktreePath?: string) {
     return request<RepoDetail>(withWorktreeQuery(`/api/repos/${repoId}/detail`, worktreePath));
   },
@@ -111,6 +115,22 @@ const httpApi = {
       method: "DELETE",
       body: JSON.stringify({ confirm })
     });
+  },
+  archiveWorktree(repoId: string, worktreeId: string) {
+    return request<ArchivedWorktreeRecord>(
+      `/api/repos/${repoId}/worktrees/${encodeURIComponent(worktreeId)}/archive`,
+      {
+        method: "POST"
+      }
+    );
+  },
+  restoreWorktree(repoId: string, worktreeId: string) {
+    return request<void>(
+      `/api/repos/${repoId}/worktrees/${encodeURIComponent(worktreeId)}/archive`,
+      {
+        method: "DELETE"
+      }
+    );
   },
   handoffWorktreeToLocal(repoId: string, worktreeId: string) {
     return request<WorktreeHandoffResult>(

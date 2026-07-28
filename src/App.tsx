@@ -2,6 +2,8 @@ import { Component, createContext, ErrorInfo, Fragment, FormEvent, KeyboardEvent
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
@@ -40,6 +42,7 @@ import {
 } from "lucide-react";
 import { api } from "./api";
 import type {
+  ArchivedWorktreeRecord,
   BranchRecord,
   DiagnosticsSnapshot,
   DiffMode,
@@ -62,6 +65,8 @@ import type {
 
 type DialogState =
   | { kind: "repo-picker" }
+  | { kind: "settings"; section?: SettingsSectionId }
+  | { kind: "review"; worktreePath: string }
   | { kind: "create-worktree" }
   | { kind: "create-branch" }
   | { kind: "delete-worktree"; worktree: WorktreeRecord }
@@ -85,6 +90,7 @@ type RepoSummaryMap = Record<string, RepoSummary>;
 type RepoErrorMap = Record<string, string>;
 type FocusedWorktreeMap = Record<string, string>;
 type ThemePreference = "dark" | "light" | "system";
+type SettingsSectionId = "general" | "git" | "integrations" | "observability";
 type AppPage =
   | "dashboard"
   | "detail"
@@ -564,6 +570,16 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Desligado": "Off",
   "Configuração falhou": "Settings failed",
   "Defaults atualizados": "Defaults updated",
+  "Configurações da aplicação": "Application settings",
+  "Secções de configuração": "Settings sections",
+  "Geral": "General",
+  "Preferências gerais": "General preferences",
+  "Tema, idioma, segurança e versão da aplicação.": "Theme, language, safety and application version.",
+  "Preferências Git": "Git preferences",
+  "Defaults usados ao criar branches e worktrees.": "Defaults used when creating branches and worktrees.",
+  "Diagnóstico e suporte": "Diagnostics and support",
+  "Estado local, métricas e exportação de diagnóstico.": "Local state, metrics and diagnostics export.",
+  "Ajustar configurações": "Adjust settings",
   "Defaults de trabalho": "Work defaults",
   "Prefixo de branch": "Branch prefix",
   "Local default das worktrees": "Default worktree location",
@@ -612,6 +628,19 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Reaplicar as alterações não commitadas na worktree.": "Reapply uncommitted changes in the worktree.",
   "Handoff concluído": "Handoff completed",
   "Handoff falhou": "Handoff failed",
+  "Arquivar": "Archive",
+  "Arquivo": "Archive",
+  "Arquivar worktree": "Archive worktree",
+  "Restaurar": "Restore",
+  "Restaurar worktree": "Restore worktree",
+  "Worktree arquivada": "Worktree archived",
+  "Worktree restaurada": "Worktree restored",
+  "Arquivo falhou": "Archive failed",
+  "Restauro falhou": "Restore failed",
+  "Worktrees escondidas na app; continuam no disco.": "Worktrees hidden in the app; they remain on disk.",
+  "Sem worktrees arquivadas": "No archived worktrees",
+  "Arquiva uma worktree para a esconder sem remover do disco.": "Archive a worktree to hide it without removing it from disk.",
+  "Arquivada em": "Archived",
   "Remover worktree": "Remove worktree",
   "Apagar branch": "Delete branch",
   "Mover para worktree": "Move to worktree",
@@ -660,6 +689,7 @@ const EN_TRANSLATIONS: Record<string, string> = {
   "Rever alterações locais": "Review local changes",
   "Abrir o visualizador de revisão da worktree em foco.": "Open the focused worktree review viewer.",
   "Revisão": "Review",
+  "Rever alterações": "Review changes",
   "Abrir a revisão da worktree em foco.": "Open the focused worktree review.",
   "Rever ficheiros staged, unstaged e por seguir.": "Review staged, unstaged and untracked files.",
   "Decidir entre commit, stash, handoff ou limpeza manual.": "Decide between commit, stash, handoff or manual cleanup.",
@@ -933,6 +963,7 @@ function WorktreeManagerApp() {
   const [repoSummaryErrors, setRepoSummaryErrors] = useState<RepoErrorMap>({});
   const [focusedWorktreePaths, setFocusedWorktreePaths] = useState<FocusedWorktreeMap>({});
   const [worktrees, setWorktrees] = useState<WorktreeRecord[]>([]);
+  const [archivedWorktrees, setArchivedWorktrees] = useState<ArchivedWorktreeRecord[]>([]);
   const [branches, setBranches] = useState<BranchRecord[]>([]);
   const [operations, setOperations] = useState<OperationRecord[]>([]);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
@@ -947,7 +978,7 @@ function WorktreeManagerApp() {
   const [reviewLoading, setReviewLoading] = useState(false);
   const [selectedReviewFileId, setSelectedReviewFileId] = useState<string | null>(null);
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
-  const [dialog, setDialog] = useState<DialogState>(null);
+  const [dialog, setDialog] = useState<DialogState>(() => readInitialDialog());
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1043,6 +1074,11 @@ function WorktreeManagerApp() {
 
   useEffect(() => {
     function handleHashChange() {
+      const hash = window.location.hash.replace(/^#/, "");
+      if (hash === "settings" || hash === "integrations") {
+        setDialog({ kind: "settings", section: hash === "integrations" ? "integrations" : undefined });
+        return;
+      }
       setActivePage(readPageFromHash());
     }
 
@@ -1082,6 +1118,7 @@ function WorktreeManagerApp() {
       setRepoSummaries({});
       setRepoSummaryErrors({});
       setWorktrees([]);
+      setArchivedWorktrees([]);
       setBranches([]);
       return;
     }
@@ -1110,14 +1147,10 @@ function WorktreeManagerApp() {
   }, [activePage, detailWorktreePath, focusedWorktreePaths, selectedRepo?.path, selectedRepoId, workspaceHydrated]);
 
   useEffect(() => {
-    if (!workspaceHydrated || activePage !== "review" || !selectedRepoId) return;
+    if (!workspaceHydrated || dialog?.kind !== "review" || !selectedRepoId) return;
 
-    const requestedPath =
-      reviewWorktreePath ??
-      (selectedRepoId ? focusedWorktreePaths[selectedRepoId] : undefined) ??
-      selectedRepo?.path;
-    void refreshReview(selectedRepoId, requestedPath ?? undefined);
-  }, [activePage, focusedWorktreePaths, reviewWorktreePath, selectedRepo?.path, selectedRepoId, workspaceHydrated]);
+    void refreshReview(selectedRepoId, dialog.worktreePath);
+  }, [dialog, selectedRepoId, workspaceHydrated]);
 
   async function loadInitialState() {
     setLoading(true);
@@ -1178,9 +1211,10 @@ function WorktreeManagerApp() {
     setError(null);
     try {
       let focusWasReset = false;
-      let [nextWorktrees, nextBranches] = await Promise.all([
+      let [nextWorktrees, nextBranches, nextArchivedWorktrees] = await Promise.all([
         api.worktrees(repoId, selectedFocusPath),
-        api.branches(repoId, selectedFocusPath)
+        api.branches(repoId, selectedFocusPath),
+        api.archivedWorktrees(repoId)
       ]).catch(async (caught) => {
         if (!selectedFocusPath || !isInvalidFocusedWorktreeError(caught)) {
           throw caught;
@@ -1191,7 +1225,7 @@ function WorktreeManagerApp() {
         selectedFocusPath = undefined;
         focusWasReset = true;
 
-        return Promise.all([api.worktrees(repoId), api.branches(repoId)]);
+        return Promise.all([api.worktrees(repoId), api.branches(repoId), api.archivedWorktrees(repoId)]);
       });
 
       const [summaryResults, nextOperations, diagnosticsSnapshot] = await Promise.all([
@@ -1237,6 +1271,7 @@ function WorktreeManagerApp() {
         }, {})
       );
       setWorktrees(nextWorktrees);
+      setArchivedWorktrees(nextArchivedWorktrees);
       setBranches(nextBranches);
       setOperations(nextOperations);
       setDiagnostics(diagnosticsSnapshot);
@@ -1658,6 +1693,80 @@ function WorktreeManagerApp() {
     navigateToPage("detail");
   }
 
+  function openReviewForWorktreePath(worktreePath: string) {
+    const knownWorktree = findKnownWorktree(worktreePath);
+    const status =
+      knownWorktree?.status ??
+      (detail && sameWorktreePath(detail.worktree.path, worktreePath) ? detail.status : null);
+
+    if (status && !hasReviewableChanges(status)) {
+      notify({ tone: "info", title: t("Sem alterações para revisão"), detail: basename(worktreePath) });
+      return;
+    }
+
+    setReviewWorktreePath(worktreePath);
+    setReview(null);
+    setSelectedReviewFileId(null);
+    setReviewError(null);
+    setDialog({ kind: "review", worktreePath });
+  }
+
+  function openWorktreeReview(worktree: WorktreeRecord) {
+    openReviewForWorktreePath(worktree.path);
+  }
+
+  async function archiveWorktree(worktree: WorktreeRecord) {
+    if (!selectedRepoId || !selectedRepo) return;
+
+    const repoId = selectedRepoId;
+    const repoIds = workspaceRepoIds;
+    const wasFocused = selectedFocusedWorktreePath
+      ? sameWorktreePath(selectedFocusedWorktreePath, worktree.path)
+      : false;
+    const nextFocusMap = wasFocused
+      ? { ...focusedWorktreePaths, [repoId]: selectedRepo.path }
+      : focusedWorktreePaths;
+
+    setActionLoading(t("Arquivar worktree"));
+    setError(null);
+    try {
+      await api.archiveWorktree(repoId, worktree.id);
+      if (wasFocused) {
+        setFocusedWorktreePaths(nextFocusMap);
+      }
+      await refreshDashboard(repoId, repoIds, nextFocusMap);
+      notify({ tone: "success", title: t("Worktree arquivada"), detail: basename(worktree.path) });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: t("Arquivo falhou"), detail: message });
+      await recordUiError("archive_worktree_failed", message, { repoId, worktree: worktree.path });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function restoreWorktree(worktree: ArchivedWorktreeRecord) {
+    if (!selectedRepoId) return;
+
+    const repoId = selectedRepoId;
+    const repoIds = workspaceRepoIds;
+    setActionLoading(t("Restaurar worktree"));
+    setError(null);
+    try {
+      await api.restoreWorktree(repoId, worktree.worktreeId);
+      await refreshDashboard(repoId, repoIds, focusedWorktreePaths);
+      notify({ tone: "success", title: t("Worktree restaurada"), detail: basename(worktree.path) });
+    } catch (caught) {
+      const message = errorMessage(caught);
+      setError(message);
+      notify({ tone: "error", title: t("Restauro falhou"), detail: message });
+      await recordUiError("restore_worktree_failed", message, { repoId, worktree: worktree.path });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handoffWorktreeToLocal(worktree: WorktreeRecord) {
     if (!selectedRepoId || !selectedRepo) return;
 
@@ -1842,28 +1951,39 @@ function WorktreeManagerApp() {
   }
 
   const localBranches = branches.filter((branch) => !branch.isRemote);
-  const navItems: Array<{ page: AppPage; label: string; icon: ReactNode }> = [
+  const navItems: Array<{ page: Exclude<AppPage, "settings" | "integrations" | "review">; label: string; icon: ReactNode }> = [
     { page: "dashboard", label: pageCopy.dashboard.nav, icon: <Home size={18} /> },
     { page: "detail", label: pageCopy.detail.nav, icon: <FolderGit2 size={18} /> },
     { page: "workflows", label: pageCopy.workflows.nav, icon: <CheckCircle2 size={18} /> },
     { page: "worktrees", label: pageCopy.worktrees.nav, icon: <GitFork size={18} /> },
     { page: "branches", label: pageCopy.branches.nav, icon: <GitBranch size={18} /> },
-    { page: "review", label: pageCopy.review.nav, icon: <Search size={18} /> },
     { page: "operations", label: pageCopy.operations.nav, icon: <TerminalSquare size={18} /> },
-    { page: "integrations", label: pageCopy.integrations.nav, icon: <Plug size={18} /> },
     { page: "privacy", label: pageCopy.privacy.nav, icon: <Shield size={18} /> },
-    { page: "help", label: pageCopy.help.nav, icon: <HelpCircle size={18} /> },
-    { page: "settings", label: pageCopy.settings.nav, icon: <Settings size={18} /> }
+    { page: "help", label: pageCopy.help.nav, icon: <HelpCircle size={18} /> }
   ];
   const pageMeta = pageCopy[activePage];
   const guidedWorkflows = buildGuidedWorkflows();
   const commandActions = buildCommandActions();
 
   function navigateToPage(page: AppPage) {
+    if (page === "settings") {
+      setDialog({ kind: "settings" });
+      setSidebarOpen(false);
+      return;
+    }
+
     setActivePage(page);
     setSidebarOpen(false);
     if (window.location.hash !== `#${page}`) {
       window.location.hash = page;
+    }
+  }
+
+  function closeSettingsDialog() {
+    setDialog(null);
+    const hash = window.location.hash.replace(/^#/, "");
+    if (hash === "settings" || hash === "integrations") {
+      window.history.replaceState(null, "", `#${activePage}`);
     }
   }
 
@@ -1919,8 +2039,7 @@ function WorktreeManagerApp() {
       return;
     }
 
-    setReviewWorktreePath(focusedPath);
-    navigateToPage("review");
+    openReviewForWorktreePath(focusedPath);
   }
 
   function runGuidedWorkflowSecondary(workflowId: GuidedWorkflowId) {
@@ -1939,7 +2058,11 @@ function WorktreeManagerApp() {
   function buildGuidedWorkflows(): GuidedWorkflowDefinition[] {
     const focusedPath = selectedFocusedWorktreePath ?? selectedRepo?.path ?? "";
     const focusedWorktree = focusedPath ? findKnownWorktree(focusedPath) : null;
-    const changedFiles = focusedWorktree?.status?.total ?? selectedSummary?.changedFileCount ?? 0;
+    const focusedStatus =
+      focusedWorktree?.status ??
+      (detail && focusedPath && sameWorktreePath(detail.worktree.path, focusedPath) ? detail.status : null);
+    const changedFiles = focusedStatus?.total ?? 0;
+    const hasFocusedChanges = changedFiles > 0;
     const blockedWithoutRepo = !selectedRepo;
     const eligibleHandoffWorktrees = selectedRepo
       ? worktrees.filter((worktree) => !sameWorktreePath(worktree.path, selectedRepo.path) && Boolean(worktree.branch))
@@ -2053,10 +2176,10 @@ function WorktreeManagerApp() {
         description: t("Abrir o visualizador de revisão da worktree em foco."),
         section: t("Revisão"),
         icon: <Search size={20} />,
-        status: blockedWithoutRepo ? "blocked" : changedFiles ? "attention" : "ready",
+        status: blockedWithoutRepo || !hasFocusedChanges ? "blocked" : "attention",
         statusLabel: blockedWithoutRepo
           ? t("Sem repositório")
-          : changedFiles
+          : hasFocusedChanges
             ? formatChangeCount(changedFiles, locale)
             : t("Sem alterações"),
         steps: [
@@ -2073,7 +2196,7 @@ function WorktreeManagerApp() {
             ]
           : [t("Seleciona um repositório para começar.")],
         primaryLabel: t("Abrir revisão"),
-        disabled: blockedWithoutRepo
+        disabled: blockedWithoutRepo || !hasFocusedChanges
       }
     ];
   }
@@ -2089,6 +2212,26 @@ function WorktreeManagerApp() {
       icon: item.icon,
       run: () => navigateToPage(item.page)
     }));
+
+    actions.push({
+      id: "settings:open",
+      title: locale === "en" ? "Open Settings" : "Abrir Configurações",
+      subtitle: pageCopy.settings.subtitle,
+      section: t("Navegação"),
+      keywords: ["settings", "config", "configuracoes", "preferencias"],
+      icon: <Settings size={18} />,
+      run: () => setDialog({ kind: "settings" })
+    });
+
+    actions.push({
+      id: "settings:integrations",
+      title: locale === "en" ? "Open Integrations" : "Abrir Integrações",
+      subtitle: t("Ferramentas externas para abrir worktrees"),
+      section: pageCopy.settings.nav,
+      keywords: ["integracoes", "integrations", "editor", "terminal"],
+      icon: <Plug size={18} />,
+      run: () => setDialog({ kind: "settings", section: "integrations" })
+    });
 
     actions.push({
       id: "repo:add",
@@ -2138,6 +2281,11 @@ function WorktreeManagerApp() {
     if (!selectedRepo) return actions;
 
     const focusedPath = selectedFocusedWorktreePath ?? selectedRepo.path;
+    const focusedWorktree = findKnownWorktree(focusedPath);
+    const focusedStatus =
+      focusedWorktree?.status ??
+      (detail && sameWorktreePath(detail.worktree.path, focusedPath) ? detail.status : null);
+    const focusedHasChanges = hasReviewableChanges(focusedStatus);
     actions.push(
       {
         id: "repo:refresh",
@@ -2165,18 +2313,6 @@ function WorktreeManagerApp() {
         keywords: ["pull", "ff", "atualizar"],
         icon: <GitBranch size={18} />,
         run: () => confirmPull(focusedPath, "focused")
-      },
-      {
-        id: "review:focused",
-        title: t("Rever alterações locais"),
-        subtitle: focusedPath,
-        section: t("Revisão"),
-        keywords: ["review", "diff", "alterações", "staged", "unstaged", "untracked"],
-        icon: <Search size={18} />,
-        run: () => {
-          setReviewWorktreePath(focusedPath);
-          navigateToPage("review");
-        }
       },
       {
         id: "worktree:create",
@@ -2233,6 +2369,18 @@ function WorktreeManagerApp() {
         run: () => openExternalPath(focusedPath, "terminal")
       }
     );
+
+    if (focusedHasChanges) {
+      actions.push({
+        id: "review:focused",
+        title: t("Rever alterações locais"),
+        subtitle: focusedPath,
+        section: t("Revisão"),
+        keywords: ["review", "diff", "alterações", "staged", "unstaged", "untracked"],
+        icon: <Search size={18} />,
+        run: () => openReviewForWorktreePath(focusedPath)
+      });
+    }
 
     worktrees.forEach((worktree) => {
       const title = worktree.branch
@@ -2424,27 +2572,7 @@ function WorktreeManagerApp() {
         onPull={(path) => confirmPull(path, "detail")}
         onHandoffLocal={confirmHandoffWorktreeToLocal}
         onMoveLocalToWorktree={confirmMoveLocalBranchToWorktree}
-        onReview={(path) => {
-          setReviewWorktreePath(path);
-          navigateToPage("review");
-        }}
-      />
-    );
-  }
-
-  function renderReviewPage() {
-    if (!selectedRepo) return renderFocusedRepoPlaceholder();
-
-    return (
-      <RepoReviewView
-        review={review?.repo.id === selectedRepo.id ? review : null}
-        error={reviewError}
-        loading={reviewLoading}
-        selectedFileId={selectedReviewFileId}
-        onSelectFile={setSelectedReviewFileId}
-        onRefresh={() => void refreshReview(selectedRepo.id, review?.worktree.path ?? reviewWorktreePath ?? selectedFocusedWorktreePath ?? undefined)}
-        onOpen={openExternalPath}
-        onCopy={(path) => void copyPath(path, setError, locale)}
+        onReview={openReviewForWorktreePath}
       />
     );
   }
@@ -2521,9 +2649,17 @@ function WorktreeManagerApp() {
             onMoveLocalToWorktree={confirmMoveLocalBranchToWorktree}
             onOpen={openExternalPath}
             onCopy={(path) => void copyPath(path, setError, locale)}
+            onReview={openWorktreeReview}
+            onArchive={(worktree) => void archiveWorktree(worktree)}
             onDelete={(worktree) => setDialog({ kind: "delete-worktree", worktree })}
           />
         </DashboardSection>
+        <ArchivedWorktreesPanel
+          archivedWorktrees={archivedWorktrees}
+          onOpen={openExternalPath}
+          onCopy={(path) => void copyPath(path, setError, locale)}
+          onRestore={(worktree) => void restoreWorktree(worktree)}
+        />
       </>
     );
   }
@@ -2585,91 +2721,6 @@ function WorktreeManagerApp() {
     );
   }
 
-  function renderIntegrationsPage() {
-    const focusedPath = selectedFocusedWorktreePath ?? selectedRepo?.path ?? null;
-
-    return (
-      <DashboardSection
-        id="integrations"
-        title={t("Integrações")}
-        subtitle={t("Ferramentas externas para abrir worktrees")}
-        actions={
-          <>
-            <button className="secondary-button" onClick={() => void refreshIntegrations()}>
-              {actionLoading === "integrations" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-              {t("Detetar")}
-            </button>
-            {focusedPath ? (
-              <>
-                <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "editor")}>
-                  <Code2 size={16} />
-                  {t("Testar editor")}
-                </button>
-                <button className="secondary-button" onClick={() => openExternalPath(focusedPath, "terminal")}>
-                  <TerminalSquare size={16} />
-                  {t("Testar terminal")}
-                </button>
-              </>
-            ) : null}
-          </>
-        }
-      >
-        <IntegrationsPanel
-          catalog={integrationCatalog}
-          settings={settings}
-          busy={actionLoading === "integrations"}
-          onChange={updateIntegrations}
-        />
-      </DashboardSection>
-    );
-  }
-
-  function renderSettingsPage() {
-    return (
-      <DashboardSection id="settings" title={pageCopy.settings.title} subtitle={pageCopy.settings.subtitle}>
-        <div className="settings-grid">
-          <div className="settings-item">
-            <ThemeToggleButton value={themePreference} onChange={setThemePreference} showLabel />
-          </div>
-          <div className="settings-item">
-            <LanguageControl
-              value={locale}
-              busy={actionLoading === "settings"}
-              copy={settingsCopy}
-              onChange={(nextLocale) => void updateLocale(nextLocale)}
-            />
-          </div>
-          <div className="settings-item">
-            <SafeModeControl
-              value={settings.safeMode}
-              busy={actionLoading === "settings"}
-              onChange={(safeMode) => void updateSafeMode(safeMode)}
-            />
-          </div>
-          <div className="settings-item settings-item-wide">
-            <WorkDefaultsControl
-              settings={settings}
-              busy={actionLoading === "settings" || actionLoading === "settings-folder"}
-              onPickFolder={pickDefaultWorktreeDirectory}
-              onSave={(defaults) => void updateWorkDefaults(defaults)}
-            />
-          </div>
-          <div className="settings-item">
-            <span className="settings-label">{settingsCopy.version}</span>
-            <strong>v1.0.0</strong>
-          </div>
-        </div>
-        <DiagnosticsPanel
-          diagnostics={diagnostics}
-          busy={actionLoading === "diagnostics" || actionLoading === "diagnostics-copy"}
-          copied={diagnosticsCopied}
-          onRefresh={() => void refreshDiagnostics()}
-          onCopy={() => void copyDiagnostics()}
-        />
-      </DashboardSection>
-    );
-  }
-
   function renderHelpPage() {
     return <HelpPage copy={helpCopy} />;
   }
@@ -2694,8 +2745,6 @@ function WorktreeManagerApp() {
     if (!workspaceHydrated && loading) return <DashboardSkeleton />;
     if (activePage === "help") return renderHelpPage();
     if (activePage === "privacy") return renderPrivacyPage();
-    if (activePage === "settings") return renderSettingsPage();
-    if (activePage === "integrations") return renderIntegrationsPage();
     if (activePage === "operations") return renderOperationsPage();
 
     if (!workspaceRepos.length) {
@@ -2721,8 +2770,6 @@ function WorktreeManagerApp() {
     if (activePage === "workflows") return renderWorkflowsPage();
     if (activePage === "worktrees") return renderWorktreesPage();
     if (activePage === "branches") return renderBranchesPage();
-    if (activePage === "review") return renderReviewPage();
-
     return (
       <>
         <WorkspaceOverview
@@ -2780,6 +2827,19 @@ function WorktreeManagerApp() {
               <span className="nav-item-label">{item.label}</span>
             </button>
           ))}
+          <button
+            aria-label={pageCopy.settings.nav}
+            className="nav-item"
+            type="button"
+            onClick={() => {
+              setDialog({ kind: "settings" });
+              setSidebarOpen(false);
+            }}
+            title={pageCopy.settings.nav}
+          >
+            <Settings size={18} />
+            <span className="nav-item-label">{pageCopy.settings.nav}</span>
+          </button>
         </nav>
 
         <div className="sidebar-footer">
@@ -2871,6 +2931,56 @@ function WorktreeManagerApp() {
             })
           }
         />
+      ) : null}
+
+      {dialog?.kind === "settings" ? (
+        <SettingsDialog
+          title={pageCopy.settings.title}
+          subtitle={pageCopy.settings.subtitle}
+          settings={settings}
+          settingsCopy={settingsCopy}
+          locale={locale}
+          themePreference={themePreference}
+          diagnostics={diagnostics}
+          diagnosticsCopied={diagnosticsCopied}
+          initialSection={dialog.section}
+          integrationCatalog={integrationCatalog}
+          focusedPath={selectedFocusedWorktreePath ?? selectedRepo?.path ?? null}
+          busy={actionLoading}
+          onClose={closeSettingsDialog}
+          onThemeChange={setThemePreference}
+          onLocaleChange={(nextLocale) => void updateLocale(nextLocale)}
+          onSafeModeChange={(safeMode) => void updateSafeMode(safeMode)}
+          onPickWorktreeDirectory={pickDefaultWorktreeDirectory}
+          onSaveWorkDefaults={(defaults) => void updateWorkDefaults(defaults)}
+          onRefreshDiagnostics={() => void refreshDiagnostics()}
+          onCopyDiagnostics={() => void copyDiagnostics()}
+          onRefreshIntegrations={() => void refreshIntegrations()}
+          onIntegrationChange={updateIntegrations}
+          onOpen={openExternalPath}
+        />
+      ) : null}
+
+      {dialog?.kind === "review" && selectedRepo ? (
+        <Modal title={t("Revisão")} size="wide" onClose={() => setDialog(null)}>
+          <div className="review-modal-content">
+            <RepoReviewView
+              review={
+                review?.repo.id === selectedRepo.id &&
+                sameWorktreePath(review.worktree.path, dialog.worktreePath)
+                  ? review
+                  : null
+              }
+              error={reviewError}
+              loading={reviewLoading}
+              selectedFileId={selectedReviewFileId}
+              onSelectFile={setSelectedReviewFileId}
+              onRefresh={() => void refreshReview(selectedRepo.id, dialog.worktreePath)}
+              onOpen={openExternalPath}
+              onCopy={(path) => void copyPath(path, setError, locale)}
+            />
+          </div>
+        </Modal>
       ) : null}
 
       {dialog?.kind === "create-branch" && selectedRepo ? (
@@ -3308,6 +3418,10 @@ const CLEAN_GIT_STATUS: GitStatusSummary = {
 
 function getWorktreeStatus(worktree: WorktreeRecord): GitStatusSummary {
   return worktree.status ?? CLEAN_GIT_STATUS;
+}
+
+function hasReviewableChanges(status?: GitStatusSummary | null): boolean {
+  return (status?.total ?? 0) > 0;
 }
 
 function matchesWorktreeFilter(worktree: WorktreeRecord, filter: WorktreeFilter): boolean {
@@ -3797,7 +3911,7 @@ function RepoDetailView({
             <Copy size={16} />
             {t("Copiar")}
           </button>
-          <button className="secondary-button" onClick={() => onReview(detail.worktree.path)}>
+          <button className="secondary-button" disabled={!hasReviewableChanges(detail.status)} onClick={() => onReview(detail.worktree.path)}>
             <Search size={16} />
             {t("Revisão")}
           </button>
@@ -3959,6 +4073,13 @@ function RepoReviewView({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ReviewFilter>("all");
   const [viewMode, setViewMode] = useState<DiffViewMode>("unified");
+  const reviewResetKey = review ? `${review.repo.id}:${review.worktree.path}:${review.generatedAt}` : "";
+
+  useEffect(() => {
+    if (!reviewResetKey) return;
+    setQuery("");
+    setFilter("all");
+  }, [reviewResetKey]);
 
   if (!review) {
     return (
@@ -4269,6 +4390,8 @@ function WorktreeTable({
   onMoveLocalToWorktree,
   onOpen,
   onCopy,
+  onReview,
+  onArchive,
   onDelete
 }: {
   worktrees: WorktreeRecord[];
@@ -4279,6 +4402,8 @@ function WorktreeTable({
   onMoveLocalToWorktree: () => void;
   onOpen: (path: string, target: OpenTarget) => void;
   onCopy: (path: string) => void;
+  onReview: (worktree: WorktreeRecord) => void;
+  onArchive: (worktree: WorktreeRecord) => void;
   onDelete: (worktree: WorktreeRecord) => void;
 }) {
   const { locale, t } = useI18n();
@@ -4371,6 +4496,12 @@ function WorktreeTable({
                             { label: t("Abrir no editor"), icon: <Code2 size={15} />, onClick: () => onOpen(worktree.path, "editor") },
                             { label: t("Abrir no terminal"), icon: <TerminalSquare size={15} />, onClick: () => onOpen(worktree.path, "terminal") },
                             { label: t("Copiar caminho"), icon: <Copy size={15} />, onClick: () => onCopy(worktree.path) },
+                            {
+                              label: t("Rever alterações"),
+                              icon: <Search size={15} />,
+                              disabled: !hasReviewableChanges(worktree.status),
+                              onClick: () => onReview(worktree)
+                            },
                             isLocalWorkspace
                               ? {
                                   label: t("Mover para worktree"),
@@ -4384,6 +4515,12 @@ function WorktreeTable({
                                   disabled: checkoutLocalDisabled,
                                   onClick: () => onHandoffLocal(worktree)
                                 },
+                            {
+                              label: t("Arquivar"),
+                              icon: <Archive size={15} />,
+                              disabled: isLocalWorkspace,
+                              onClick: () => onArchive(worktree)
+                            },
                             {
                               label: t("Remover"),
                               icon: <Trash2 size={15} />,
@@ -4425,6 +4562,93 @@ function WorktreeTable({
           : `Mostrando ${filteredWorktrees.length} de ${worktrees.length} worktrees`}
       </p>
     </>
+  );
+}
+
+function ArchivedWorktreesPanel({
+  archivedWorktrees,
+  onOpen,
+  onCopy,
+  onRestore
+}: {
+  archivedWorktrees: ArchivedWorktreeRecord[];
+  onOpen: (path: string, target: OpenTarget) => void;
+  onCopy: (path: string) => void;
+  onRestore: (worktree: ArchivedWorktreeRecord) => void;
+}) {
+  const { locale, t } = useI18n();
+
+  return (
+    <DashboardSection
+      id="worktree-archive"
+      title={t("Arquivo")}
+      subtitle={t("Worktrees escondidas na app; continuam no disco.")}
+    >
+      {archivedWorktrees.length ? (
+        <div className="table-wrap archive-table">
+          <table>
+            <thead>
+              <tr>
+                <th>{t("Caminho")}</th>
+                <th>Branch</th>
+                <th>HEAD</th>
+                <th>{t("Arquivada em")}</th>
+                <th>{t("Ações")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {archivedWorktrees.map((worktree) => (
+                <tr key={`${worktree.repoId}-${worktree.worktreeId}`}>
+                  <td>
+                    <div className="path-cell archive-path-cell" title={worktree.path}>
+                      <Archive size={16} />
+                      <span>{worktree.path}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className={worktree.branch ? "badge blue" : "badge detached"}>
+                      {worktree.branch ?? t("Detached")}
+                    </span>
+                  </td>
+                  <td>{worktree.head ? worktree.head.slice(0, 7) : "-"}</td>
+                  <td>{relativeDate(worktree.archivedAt, locale)}</td>
+                  <td>
+                    <div className="inline-actions">
+                      <button
+                        className="secondary-button compact-button"
+                        type="button"
+                        onClick={() => onRestore(worktree)}
+                      >
+                        <ArchiveRestore size={15} />
+                        {t("Restaurar")}
+                      </button>
+                      <RowActions
+                        items={[
+                          { label: t("Abrir pasta"), icon: <Folder size={15} />, onClick: () => onOpen(worktree.path, "folder") },
+                          { label: t("Abrir no editor"), icon: <Code2 size={15} />, onClick: () => onOpen(worktree.path, "editor") },
+                          { label: t("Abrir no terminal"), icon: <TerminalSquare size={15} />, onClick: () => onOpen(worktree.path, "terminal") },
+                          { label: t("Copiar caminho"), icon: <Copy size={15} />, onClick: () => onCopy(worktree.path) }
+                        ]}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="action-empty-state archive-empty-state">
+          <div className="action-empty-icon">
+            <Archive size={20} />
+          </div>
+          <div className="action-empty-copy">
+            <h3>{t("Sem worktrees arquivadas")}</h3>
+            <p>{t("Arquiva uma worktree para a esconder sem remover do disco.")}</p>
+          </div>
+        </div>
+      )}
+    </DashboardSection>
   );
 }
 
@@ -4887,6 +5111,220 @@ function RowActions({
           )
         : null}
     </div>
+  );
+}
+
+function SettingsDialog({
+  title,
+  subtitle,
+  settings,
+  settingsCopy,
+  locale,
+  themePreference,
+  diagnostics,
+  diagnosticsCopied,
+  initialSection = "general",
+  integrationCatalog,
+  focusedPath,
+  busy,
+  onClose,
+  onThemeChange,
+  onLocaleChange,
+  onSafeModeChange,
+  onPickWorktreeDirectory,
+  onSaveWorkDefaults,
+  onRefreshDiagnostics,
+  onCopyDiagnostics,
+  onRefreshIntegrations,
+  onIntegrationChange,
+  onOpen
+}: {
+  title: string;
+  subtitle: string;
+  settings: AppSettings;
+  settingsCopy: (typeof SETTINGS_COPY)[Locale];
+  locale: Locale;
+  themePreference: ThemePreference;
+  diagnostics: DiagnosticsSnapshot | null;
+  diagnosticsCopied: boolean;
+  initialSection?: SettingsSectionId;
+  integrationCatalog: IntegrationCatalog | null;
+  focusedPath: string | null;
+  busy: string | null;
+  onClose: () => void;
+  onThemeChange: (value: ThemePreference) => void;
+  onLocaleChange: (value: Locale) => void;
+  onSafeModeChange: (value: boolean) => void;
+  onPickWorktreeDirectory: () => Promise<string | null>;
+  onSaveWorkDefaults: (defaults: Pick<AppSettings, "branchPrefix" | "worktreeDirectory">) => void;
+  onRefreshDiagnostics: () => void;
+  onCopyDiagnostics: () => void;
+  onRefreshIntegrations: () => void;
+  onIntegrationChange: (integrations: AppSettings["integrations"]) => void;
+  onOpen: (path: string, target: OpenTarget) => void;
+}) {
+  const { t } = useI18n();
+  const [section, setSection] = useState<SettingsSectionId>(initialSection);
+  const sections: Array<{
+    id: SettingsSectionId;
+    title: string;
+    description: string;
+    icon: ReactNode;
+  }> = [
+    {
+      id: "general",
+      title: t("Geral"),
+      description: t("Tema, idioma, segurança e versão da aplicação."),
+      icon: <Settings size={17} />
+    },
+    {
+      id: "git",
+      title: "Git",
+      description: t("Defaults usados ao criar branches e worktrees."),
+      icon: <GitBranch size={17} />
+    },
+    {
+      id: "integrations",
+      title: t("Integrações"),
+      description: t("Ferramentas externas para abrir worktrees"),
+      icon: <Plug size={17} />
+    },
+    {
+      id: "observability",
+      title: t("Observabilidade"),
+      description: t("Estado local, métricas e exportação de diagnóstico."),
+      icon: <Database size={17} />
+    }
+  ];
+  const activeSection = sections.find((item) => item.id === section) ?? sections[0];
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="settings-modal-layout">
+        <div className="settings-modal-intro">
+          <span className="settings-label">{t("Configurações da aplicação")}</span>
+          <p>{subtitle}</p>
+        </div>
+
+        <div className="settings-modal-body">
+          <div className="settings-section-tabs" role="tablist" aria-label={t("Secções de configuração")}>
+            {sections.map((item) => (
+              <button
+                key={item.id}
+                id={`settings-tab-${item.id}`}
+                aria-controls={`settings-panel-${item.id}`}
+                aria-selected={section === item.id}
+                className={section === item.id ? "settings-section-tab active" : "settings-section-tab"}
+                role="tab"
+                type="button"
+                onClick={() => setSection(item.id)}
+              >
+                <span className="settings-section-icon">{item.icon}</span>
+                <span>
+                  <strong>{item.title}</strong>
+                  <small>{item.description}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <section
+            id={`settings-panel-${activeSection.id}`}
+            className="settings-modal-content"
+            role="tabpanel"
+            aria-labelledby={`settings-tab-${activeSection.id}`}
+          >
+            <div className="settings-section-heading">
+              <h3>{activeSection.title}</h3>
+              <p>{activeSection.description}</p>
+            </div>
+
+            {section === "general" ? (
+              <div className="settings-grid">
+                <div className="settings-item">
+                  <ThemeToggleButton value={themePreference} onChange={onThemeChange} showLabel />
+                </div>
+                <div className="settings-item">
+                  <LanguageControl
+                    value={locale}
+                    busy={busy === "settings"}
+                    copy={settingsCopy}
+                    onChange={onLocaleChange}
+                  />
+                </div>
+                <div className="settings-item">
+                  <SafeModeControl
+                    value={settings.safeMode}
+                    busy={busy === "settings"}
+                    onChange={onSafeModeChange}
+                  />
+                </div>
+                <div className="settings-item">
+                  <span className="settings-label">{settingsCopy.version}</span>
+                  <strong>v1.0.0</strong>
+                </div>
+              </div>
+            ) : null}
+
+            {section === "git" ? (
+              <div className="settings-grid">
+                <div className="settings-item settings-item-wide">
+                  <WorkDefaultsControl
+                    settings={settings}
+                    busy={busy === "settings" || busy === "settings-folder"}
+                    onPickFolder={onPickWorktreeDirectory}
+                    onSave={onSaveWorkDefaults}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {section === "integrations" ? (
+              <>
+                <div className="settings-section-actions">
+                  <button className="secondary-button" onClick={onRefreshIntegrations}>
+                    {busy === "integrations" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+                    {t("Detetar")}
+                  </button>
+                  {focusedPath ? (
+                    <>
+                      <button className="secondary-button" onClick={() => onOpen(focusedPath, "editor")}>
+                        <Code2 size={16} />
+                        {t("Testar editor")}
+                      </button>
+                      <button className="secondary-button" onClick={() => onOpen(focusedPath, "terminal")}>
+                        <TerminalSquare size={16} />
+                        {t("Testar terminal")}
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+                <IntegrationsPanel
+                  catalog={integrationCatalog}
+                  settings={settings}
+                  busy={busy === "integrations"}
+                  onChange={onIntegrationChange}
+                />
+              </>
+            ) : null}
+
+            {section === "observability" ? (
+              <DiagnosticsPanel
+                diagnostics={diagnostics}
+                busy={busy === "diagnostics" || busy === "diagnostics-copy"}
+                copied={diagnosticsCopied}
+                onRefresh={onRefreshDiagnostics}
+                onCopy={onCopyDiagnostics}
+              />
+            ) : null}
+          </section>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -6097,7 +6535,17 @@ function ConfirmDeleteDialog({
   );
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+function Modal({
+  title,
+  size = "default",
+  onClose,
+  children
+}: {
+  title: string;
+  size?: "default" | "wide";
+  onClose: () => void;
+  children: ReactNode;
+}) {
   const titleId = useId();
   const modalRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -6160,7 +6608,14 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div
+        ref={modalRef}
+        className={size === "wide" ? "modal modal-wide" : "modal"}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <div className="modal-header">
           <h2 id={titleId}>{title}</h2>
           <button className="icon-button compact" onClick={onClose}>
@@ -6459,6 +6914,13 @@ function readPageFromHash(): AppPage {
   return isAppPage(value) ? value : DEFAULT_PAGE;
 }
 
+function readInitialDialog(): DialogState {
+  const hash = window.location.hash.replace(/^#/, "");
+  if (hash === "settings") return { kind: "settings" };
+  if (hash === "integrations") return { kind: "settings", section: "integrations" };
+  return null;
+}
+
 function isAppPage(value: unknown): value is AppPage {
   return (
     value === "dashboard" ||
@@ -6466,12 +6928,9 @@ function isAppPage(value: unknown): value is AppPage {
     value === "workflows" ||
     value === "worktrees" ||
     value === "branches" ||
-    value === "review" ||
     value === "operations" ||
-    value === "integrations" ||
     value === "privacy" ||
-    value === "help" ||
-    value === "settings"
+    value === "help"
   );
 }
 

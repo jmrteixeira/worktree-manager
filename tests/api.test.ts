@@ -236,6 +236,11 @@ describe("api", () => {
     const staged = review.files.find((file) => file.path === "staged.txt" && file.mode === "staged");
     const untracked = review.files.find((file) => file.path === "notes.txt" && file.mode === "untracked");
 
+    expect(review.files.map((file) => `${file.mode}:${file.path}`)).toEqual([
+      "staged:staged.txt",
+      "unstaged:README.md",
+      "untracked:notes.txt"
+    ]);
     expect(readme).toMatchObject({
       additions: 1,
       deletions: 0,
@@ -495,6 +500,42 @@ describe("api", () => {
     expect(path.basename(created?.path ?? "")).toBe("repo-feature-test");
     await runGit(repo.path, ["worktree", "remove", created!.path], store);
     await expect(fs.access(created!.path)).rejects.toThrow();
+  });
+
+  it("archives and restores a worktree without removing it from disk", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    const targetPath = path.join(tmpDir, "archive-worktree");
+
+    await runGit(repo.path, ["worktree", "add", "-b", "feature/archive", targetPath], store);
+
+    const allWorktrees = await getWorktrees(repo.path, repo.path, store);
+    const target = allWorktrees.find((worktree) => worktree.branch === "feature/archive");
+    expect(target).toBeTruthy();
+
+    const archived = await store.archiveWorktree(repo.id, target!);
+    expect(archived).toMatchObject({
+      repoId: repo.id,
+      worktreeId: target!.id,
+      path: target!.path,
+      branch: "feature/archive"
+    });
+    await expect(fs.access(targetPath)).resolves.toBeUndefined();
+
+    const archivedRecords = await store.listArchivedWorktrees(repo.id);
+    expect(archivedRecords).toHaveLength(1);
+
+    const archivedSummary = await getRepoSummary(repo, repo.path, store);
+    expect(archivedSummary.worktreeCount).toBe(1);
+
+    const branch = await git(targetPath, "branch", "--show-current");
+    expect(branch.stdout.trim()).toBe("feature/archive");
+
+    await store.restoreWorktree(repo.id, target!.id);
+    await expect(store.listArchivedWorktrees(repo.id)).resolves.toHaveLength(0);
+
+    const restoredSummary = await getRepoSummary(repo, repo.path, store);
+    expect(restoredSummary.worktreeCount).toBe(2);
   });
 
   it("creates a worktree from a remote branch and tracks the upstream", async () => {

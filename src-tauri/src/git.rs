@@ -9,6 +9,7 @@ use crate::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -61,6 +62,12 @@ enum BranchSource {
         branch: String,
         local_branch: String,
     },
+}
+
+#[derive(Debug, Clone)]
+struct ReviewDiffInput {
+    file: GitFileStatus,
+    mode: String,
 }
 
 pub fn encode_path_id(value: &str) -> String {
@@ -520,7 +527,7 @@ pub fn get_repo_detail(
     focused_path: &Path,
     state: Option<&AppState>,
 ) -> Result<RepoDetail, String> {
-    let worktrees = get_worktrees(Path::new(&repo.path), focused_path, state)?;
+    let all_worktrees = get_worktrees(Path::new(&repo.path), focused_path, state)?;
     let status = run_git(
         focused_path,
         git_args(&["status", "--porcelain=v1", "-uall"]),
@@ -534,10 +541,10 @@ pub fn get_repo_detail(
     let upstream = get_upstream_branch(focused_path, state)?;
     let last_fetch_at = get_last_fetch_at(focused_path, state)?;
     let stash_count = get_stash_count(Path::new(&repo.path), state)?;
-    let worktree = worktrees
+    let worktree = all_worktrees
         .iter()
         .find(|item| comparable_path(Path::new(&item.path)) == comparable_path(focused_path))
-        .or_else(|| worktrees.iter().find(|item| item.is_current))
+        .or_else(|| all_worktrees.iter().find(|item| item.is_current))
         .cloned()
         .ok_or_else(|| "A worktree selecionada nao pertence a este repositorio.".to_string())?;
 
@@ -547,6 +554,7 @@ pub fn get_repo_detail(
         (0, 0)
     };
     let files = parse_status_porcelain(&status.stdout);
+    let worktrees = visible_worktrees_for_repo(&repo.id, all_worktrees, state);
 
     Ok(RepoDetail {
         repo: repo.clone(),
@@ -587,18 +595,22 @@ pub fn get_repo_review(
         .cloned()
         .ok_or_else(|| "A worktree selecionada nao pertence a este repositorio.".to_string())?;
     let status_files = parse_status_porcelain(&status.stdout);
+    let review_inputs = build_review_diff_inputs(focused_path, &status_files, state)?;
     let mut files = Vec::new();
-    for file in &status_files {
-        for mode in review_modes_for_file(file) {
-            files.push(build_review_diff_file(focused_path, file, &mode, state)?);
-        }
+    for input in &review_inputs {
+        files.push(build_review_diff_file(
+            focused_path,
+            &input.file,
+            &input.mode,
+            state,
+        )?);
     }
     files.sort_by(|left, right| {
-        let path_order = left.path.cmp(&right.path);
-        if path_order != std::cmp::Ordering::Equal {
-            return path_order;
+        let mode_order = review_mode_order(&left.mode).cmp(&review_mode_order(&right.mode));
+        if mode_order != std::cmp::Ordering::Equal {
+            return mode_order;
         }
-        review_mode_order(&left.mode).cmp(&review_mode_order(&right.mode))
+        left.path.cmp(&right.path)
     });
 
     Ok(ReviewDiffResponse {
@@ -609,6 +621,95 @@ pub fn get_repo_review(
         files,
         generated_at: now_iso(),
     })
+}
+
+fn build_review_diff_inputs(
+    worktree_path: &Path,
+    status_files: &[GitFileStatus],
+    state: Option<&AppState>,
+) -> Result<Vec<ReviewDiffInput>, String> {
+    let mut inputs = Vec::new();
+    for file in status_files {
+        for mode in review_modes_for_file(file) {
+            inputs.push(ReviewDiffInput {
+                file: file.clone(),
+                mode,
+            });
+        }
+    }
+
+    let mut seen = inputs
+        .iter()
+        .map(review_diff_input_key)
+        .collect::<HashSet<_>>();
+    for file_path in changed_paths_for_diff_mode(worktree_path, "staged", state)? {
+        let input = ReviewDiffInput {
+            file: synthetic_review_status(&file_path, "staged"),
+            mode: "staged".to_string(),
+        };
+        if seen.insert(review_diff_input_key(&input)) {
+            inputs.push(input);
+        }
+    }
+    for file_path in changed_paths_for_diff_mode(worktree_path, "unstaged", state)? {
+        let input = ReviewDiffInput {
+            file: synthetic_review_status(&file_path, "unstaged"),
+            mode: "unstaged".to_string(),
+        };
+        if seen.insert(review_diff_input_key(&input)) {
+            inputs.push(input);
+        }
+    }
+
+    Ok(inputs)
+}
+
+fn changed_paths_for_diff_mode(
+    worktree_path: &Path,
+    mode: &str,
+    state: Option<&AppState>,
+) -> Result<Vec<String>, String> {
+    let args = if mode == "staged" {
+        git_args(&["diff", "--cached", "--no-ext-diff", "--name-only", "--"])
+    } else {
+        git_args(&["diff", "--no-ext-diff", "--name-only", "--"])
+    };
+    let result = run_git(
+        worktree_path,
+        args,
+        state,
+        RunGitOptions {
+            allow_failure: true,
+            record: false,
+            timeout_ms: 120_000,
+        },
+    )?;
+
+    if result.exit_code != Some(0) {
+        return Ok(Vec::new());
+    }
+
+    Ok(result
+        .stdout
+        .replace("\r\n", "\n")
+        .lines()
+        .map(decode_git_path)
+        .filter(|path| !path.is_empty())
+        .collect())
+}
+
+fn synthetic_review_status(file_path: &str, mode: &str) -> GitFileStatus {
+    GitFileStatus {
+        path: file_path.to_string(),
+        original_path: None,
+        index_status: if mode == "staged" { "M" } else { " " }.to_string(),
+        worktree_status: if mode == "unstaged" { "M" } else { " " }.to_string(),
+        label: "Modificado".to_string(),
+    }
+}
+
+fn review_diff_input_key(input: &ReviewDiffInput) -> String {
+    format!("{}:{}", input.mode, input.file.path)
 }
 
 fn review_modes_for_file(file: &GitFileStatus) -> Vec<String> {
@@ -931,6 +1032,28 @@ fn is_path_inside(parent_path: &Path, child_path: &Path) -> bool {
     child == parent || child.starts_with(parent)
 }
 
+fn visible_worktrees_for_repo(
+    repo_id: &str,
+    worktrees: Vec<WorktreeRecord>,
+    state: Option<&AppState>,
+) -> Vec<WorktreeRecord> {
+    let Some(state) = state else {
+        return worktrees;
+    };
+    let archived_ids = state
+        .list_archived_worktrees(repo_id)
+        .into_iter()
+        .map(|worktree| worktree.worktree_id)
+        .collect::<std::collections::HashSet<_>>();
+    if archived_ids.is_empty() {
+        return worktrees;
+    }
+    worktrees
+        .into_iter()
+        .filter(|worktree| !archived_ids.contains(&worktree.id))
+        .collect()
+}
+
 pub fn get_repo_summary(
     repo: &RepoRecord,
     focused_path: &Path,
@@ -946,7 +1069,7 @@ pub fn get_repo_summary(
         },
     )?;
     let current_branch = get_current_branch(focused_path, state)?;
-    let worktrees = get_worktrees(Path::new(&repo.path), focused_path, state)?;
+    let all_worktrees = get_worktrees(Path::new(&repo.path), focused_path, state)?;
     let branches = get_branches(focused_path, state)?;
     let commits = run_git(
         Path::new(&repo.path),
@@ -959,6 +1082,7 @@ pub fn get_repo_summary(
         },
     )?;
     let stash_count = get_stash_count(Path::new(&repo.path), state)?;
+    let worktrees = visible_worktrees_for_repo(&repo.id, all_worktrees, state);
     let changed_file_count = worktrees
         .iter()
         .map(|worktree| {
@@ -2366,5 +2490,83 @@ fn non_empty(value: &str) -> Option<String> {
         None
     } else {
         Some(value.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs as std_fs, process::Command};
+
+    fn run_test_git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run git {}: {error}", args.join(" ")));
+
+        if !output.status.success() {
+            panic!(
+                "git {} failed\nstdout:\n{}\nstderr:\n{}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    fn create_temp_repo() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("worktree-manager-review-{}", Uuid::new_v4()));
+        std_fs::create_dir_all(&path).expect("create temp repo directory");
+        run_test_git(&path, &["init", "-b", "main"]);
+        run_test_git(&path, &["config", "user.email", "test@example.com"]);
+        run_test_git(&path, &["config", "user.name", "Test User"]);
+        path.canonicalize().unwrap_or(path)
+    }
+
+    #[test]
+    fn repo_review_includes_staged_unstaged_and_untracked_files() {
+        let repo_path = create_temp_repo();
+        std_fs::write(repo_path.join("README.md"), "hello\n").expect("write readme");
+        std_fs::write(repo_path.join("staged-mod.txt"), "before\n").expect("write staged file");
+        run_test_git(&repo_path, &["add", "."]);
+        run_test_git(&repo_path, &["commit", "-m", "initial"]);
+
+        std_fs::write(repo_path.join("README.md"), "hello\nunstaged\n").expect("modify readme");
+        std_fs::write(repo_path.join("staged-mod.txt"), "after\n").expect("modify staged file");
+        run_test_git(&repo_path, &["add", "staged-mod.txt"]);
+        std_fs::write(repo_path.join("00-untracked.txt"), "new\n").expect("write untracked file");
+
+        let repo = RepoRecord {
+            id: "repo-1".to_string(),
+            name: "repo".to_string(),
+            path: path_string(&repo_path),
+            last_opened_at: now_iso(),
+        };
+        let review = get_repo_review(&repo, &repo_path, None).expect("build review");
+        let file_keys = review
+            .files
+            .iter()
+            .map(|file| format!("{}:{}", file.mode, file.path))
+            .collect::<Vec<_>>();
+
+        assert_eq!(review.status.staged, 1);
+        assert_eq!(review.status.unstaged, 1);
+        assert_eq!(review.status.untracked, 1);
+        assert_eq!(
+            file_keys,
+            vec![
+                "staged:staged-mod.txt",
+                "unstaged:README.md",
+                "untracked:00-untracked.txt",
+            ]
+        );
+        assert!(review.files.iter().any(|file| file.mode == "unstaged"
+            && file.path == "README.md"
+            && file.additions == 1));
+
+        let _ = std_fs::remove_dir_all(repo_path);
     }
 }

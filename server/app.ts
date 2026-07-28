@@ -177,7 +177,45 @@ export function createApp(store: AppStore = createDefaultStore()) {
         stringQuery(req.query.worktreePath),
         store
       );
-      res.json(await getWorktrees(repo.path, focusedPath, store));
+      const worktrees = await getWorktrees(repo.path, focusedPath, store);
+      const archivedIds = new Set((await store.listArchivedWorktrees(repo.id)).map((worktree) => worktree.worktreeId));
+      res.json(worktrees.filter((worktree) => !archivedIds.has(worktree.id)));
+    })
+  );
+
+  app.get(
+    "/api/repos/:repoId/worktrees/archive",
+    withRepo(store, async (repo, _req, res) => {
+      res.json(await store.listArchivedWorktrees(repo.id));
+    })
+  );
+
+  app.post(
+    "/api/repos/:repoId/worktrees/:worktreeId/archive",
+    withRepo(store, async (repo, req, res) => {
+      const worktreePath = decodePathId(req.params.worktreeId);
+      const focusedPath = await resolveRepoWorktreePath(repo.path, worktreePath, store);
+      if (path.resolve(focusedPath) === path.resolve(repo.path)) {
+        res.status(400).json({ error: "Não é possível arquivar o workspace local do repositório." });
+        return;
+      }
+
+      const worktrees = await getWorktrees(repo.path, focusedPath, store);
+      const worktree = worktrees.find((item) => path.resolve(item.path) === path.resolve(focusedPath));
+      if (!worktree) {
+        res.status(404).json({ error: "Worktree não encontrada." });
+        return;
+      }
+
+      res.status(201).json(await store.archiveWorktree(repo.id, worktree));
+    })
+  );
+
+  app.delete(
+    "/api/repos/:repoId/worktrees/:worktreeId/archive",
+    withRepo(store, async (repo, req, res) => {
+      await store.restoreWorktree(repo.id, req.params.worktreeId);
+      res.status(204).end();
     })
   );
 

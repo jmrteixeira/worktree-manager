@@ -58,6 +58,17 @@ pub struct WorktreeRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ArchivedWorktreeRecord {
+    pub repo_id: String,
+    pub worktree_id: String,
+    pub path: String,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub archived_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitFileStatus {
     pub path: String,
     pub original_path: Option<String>,

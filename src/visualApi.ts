@@ -1,4 +1,5 @@
 import type {
+  ArchivedWorktreeRecord,
   BranchRecord,
   DiagnosticEventInput,
   DiagnosticsSnapshot,
@@ -101,6 +102,8 @@ const worktrees: WorktreeRecord[] = [
     }
   }
 ];
+
+let archivedWorktrees: ArchivedWorktreeRecord[] = [];
 
 const branches: BranchRecord[] = [
   {
@@ -360,6 +363,7 @@ export const visualApi = {
     return record;
   },
   async summary(_repoId: string, worktreePath?: string): Promise<RepoSummary> {
+    const visibleWorktrees = visibleWorktreesForVisualApi(worktreePath);
     const focused = worktreeForPath(worktreePath ?? authPath);
     return {
       repo,
@@ -369,9 +373,9 @@ export const visualApi = {
       currentBranch: focused.branch ?? "detached",
       commitCount: 142,
       branchCount: branches.filter((branch) => !branch.isRemote).length,
-      worktreeCount: worktrees.length,
-      dirtyWorktreeCount: worktrees.filter((worktree) => worktree.status && !worktree.status.clean).length,
-      changedFileCount: worktrees.reduce((total, worktree) => total + (worktree.status?.total ?? 0), 0),
+      worktreeCount: visibleWorktrees.length,
+      dirtyWorktreeCount: visibleWorktrees.filter((worktree) => worktree.status && !worktree.status.clean).length,
+      changedFileCount: visibleWorktrees.reduce((total, worktree) => total + (worktree.status?.total ?? 0), 0),
       stashCount: 1,
       ahead: focused.ahead ?? 0,
       behind: focused.behind ?? 0,
@@ -381,10 +385,10 @@ export const visualApi = {
     };
   },
   async worktrees(_repoId: string, worktreePath?: string): Promise<WorktreeRecord[]> {
-    return worktrees.map((worktree) => ({
-      ...worktree,
-      isCurrent: worktree.path === (worktreePath ?? authPath)
-    }));
+    return visibleWorktreesForVisualApi(worktreePath);
+  },
+  async archivedWorktrees(): Promise<ArchivedWorktreeRecord[]> {
+    return archivedWorktrees;
   },
   async detail(_repoId: string, worktreePath?: string): Promise<RepoDetail> {
     const worktree = worktreeForPath(worktreePath ?? authPath);
@@ -425,7 +429,7 @@ export const visualApi = {
               label: "Por seguir"
             }
           ],
-      worktrees,
+      worktrees: visibleWorktreesForVisualApi(worktreePath),
       lastUpdatedAt: "2026-07-07T18:00:00.000Z"
     };
   },
@@ -498,6 +502,28 @@ export const visualApi = {
   async createWorktree(): Promise<{ path: string }> {
     return { path: dashboardPath };
   },
+  async archiveWorktree(_repoId: string, worktreeId: string): Promise<ArchivedWorktreeRecord> {
+    const worktree = worktrees.find((item) => item.id === worktreeId);
+    if (!worktree) {
+      throw new Error("Worktree não encontrada.");
+    }
+    const record: ArchivedWorktreeRecord = {
+      repoId: repo.id,
+      worktreeId: worktree.id,
+      path: worktree.path,
+      branch: worktree.branch,
+      head: worktree.head,
+      archivedAt: new Date().toISOString()
+    };
+    archivedWorktrees = [
+      record,
+      ...archivedWorktrees.filter((item) => item.repoId !== record.repoId || item.worktreeId !== record.worktreeId)
+    ];
+    return record;
+  },
+  async restoreWorktree(_repoId: string, worktreeId: string): Promise<void> {
+    archivedWorktrees = archivedWorktrees.filter((worktree) => worktree.worktreeId !== worktreeId);
+  },
   async removeWorktree(): Promise<void> {},
   async handoffWorktreeToLocal(): Promise<WorktreeHandoffResult> {
     return {
@@ -545,6 +571,16 @@ export const visualApi = {
 
 function worktreeForPath(worktreePath: string): WorktreeRecord {
   return worktrees.find((worktree) => worktree.path === worktreePath) ?? worktrees[1];
+}
+
+function visibleWorktreesForVisualApi(worktreePath?: string): WorktreeRecord[] {
+  const archivedIds = new Set(archivedWorktrees.map((worktree) => worktree.worktreeId));
+  return worktrees
+    .filter((worktree) => !archivedIds.has(worktree.id))
+    .map((worktree) => ({
+      ...worktree,
+      isCurrent: worktree.path === (worktreePath ?? authPath)
+    }));
 }
 
 function buildVisualDiagnostics(): DiagnosticsSnapshot {

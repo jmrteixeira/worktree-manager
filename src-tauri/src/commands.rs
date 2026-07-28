@@ -1,11 +1,11 @@
 use crate::{
     git,
     models::{
-        AppSettings, AppSettingsPatch, BranchRecord, CheckoutBranchBody, CreateBranchBody,
-        CreateWorktreeBody, DeleteBranchBody, DiagnosticEventInput, DiagnosticsSnapshot,
-        EditorIntegrationId, FsEntry, FsListResponse, IntegrationCatalog, IntegrationRecord,
-        LocalBranchWorktreeResult, MoveLocalBranchBody, OkResponse, OpenTarget, OperationRecord,
-        OperationStats, RepoDetail, RepoRecord, RepoSummary, ReviewDiffResponse,
+        AppSettings, AppSettingsPatch, ArchivedWorktreeRecord, BranchRecord, CheckoutBranchBody,
+        CreateBranchBody, CreateWorktreeBody, DeleteBranchBody, DiagnosticEventInput,
+        DiagnosticsSnapshot, EditorIntegrationId, FsEntry, FsListResponse, IntegrationCatalog,
+        IntegrationRecord, LocalBranchWorktreeResult, MoveLocalBranchBody, OkResponse, OpenTarget,
+        OperationRecord, OperationStats, RepoDetail, RepoRecord, RepoSummary, ReviewDiffResponse,
         TerminalIntegrationId, WorktreeHandoffResult, WorktreeRecord,
     },
     store::{absolute_path, now_iso, path_string, AppState},
@@ -206,7 +206,64 @@ pub fn repo_worktrees(
         worktree_path.as_deref(),
         Some(app_state),
     )?;
-    git::get_worktrees(Path::new(&repo.path), &focused_path, Some(app_state))
+    let worktrees = git::get_worktrees(Path::new(&repo.path), &focused_path, Some(app_state))?;
+    let archived_ids = app_state
+        .list_archived_worktrees(&repo.id)
+        .into_iter()
+        .map(|worktree| worktree.worktree_id)
+        .collect::<std::collections::HashSet<_>>();
+    Ok(worktrees
+        .into_iter()
+        .filter(|worktree| !archived_ids.contains(&worktree.id))
+        .collect())
+}
+
+#[tauri::command]
+pub fn archived_worktrees(
+    repo_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchivedWorktreeRecord>, String> {
+    let app_state = state.inner();
+    let _repo = repo_or_error(app_state, &repo_id)?;
+    Ok(app_state.list_archived_worktrees(&repo_id))
+}
+
+#[tauri::command]
+pub fn archive_worktree(
+    repo_id: String,
+    worktree_id: String,
+    state: State<'_, AppState>,
+) -> Result<ArchivedWorktreeRecord, String> {
+    let app_state = state.inner();
+    let repo = repo_or_error(app_state, &repo_id)?;
+    let worktree_path = git::decode_path_id(&worktree_id)?;
+    let focused_path = git::resolve_repo_worktree_path(
+        Path::new(&repo.path),
+        Some(worktree_path.as_str()),
+        Some(app_state),
+    )?;
+    if absolute_path(&focused_path) == absolute_path(Path::new(&repo.path)) {
+        return Err("Não é possível arquivar o workspace local do repositório.".to_string());
+    }
+
+    let worktrees = git::get_worktrees(Path::new(&repo.path), &focused_path, Some(app_state))?;
+    let worktree = worktrees
+        .iter()
+        .find(|item| absolute_path(Path::new(&item.path)) == absolute_path(&focused_path))
+        .cloned()
+        .ok_or_else(|| "Worktree nao encontrada.".to_string())?;
+    app_state.archive_worktree(&repo.id, &worktree)
+}
+
+#[tauri::command]
+pub fn restore_worktree(
+    repo_id: String,
+    worktree_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let app_state = state.inner();
+    let _repo = repo_or_error(app_state, &repo_id)?;
+    app_state.restore_worktree(&repo_id, &worktree_id)
 }
 
 #[tauri::command]

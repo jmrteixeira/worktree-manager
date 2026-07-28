@@ -56,6 +56,11 @@ type BranchSource =
   | { kind: "local"; branch: string }
   | { kind: "remote"; branch: string; localBranch: string };
 
+type ReviewDiffInput = {
+  file: GitFileStatus;
+  mode: DiffMode;
+};
+
 const MAX_OPERATION_LOG_CHARS = 20_000;
 const MAX_REVIEW_FILE_BYTES = 220_000;
 const MAX_REVIEW_UNTRACKED_LINES = 4_000;
@@ -743,7 +748,7 @@ export async function getRepoDetail(
   focusedPath = repo.path,
   store?: AppStore
 ): Promise<RepoDetail> {
-  const [worktrees, statusResult, branch, upstream, lastFetchAt, stashCount] = await Promise.all([
+  const [allWorktrees, statusResult, branch, upstream, lastFetchAt, stashCount] = await Promise.all([
     getWorktrees(repo.path, focusedPath, store),
     runGit(focusedPath, ["status", "--porcelain=v1", "-uall"], store, { record: false }),
     getCheckedOutBranch(focusedPath, store),
@@ -752,14 +757,15 @@ export async function getRepoDetail(
     getStashCount(repo.path, store)
   ]);
   const worktree =
-    worktrees.find((item) => path.resolve(item.path) === path.resolve(focusedPath)) ??
-    worktrees.find((item) => item.isCurrent);
+    allWorktrees.find((item) => path.resolve(item.path) === path.resolve(focusedPath)) ??
+    allWorktrees.find((item) => item.isCurrent);
   if (!worktree) {
     throw new Error("A worktree selecionada não pertence a este repositório.");
   }
 
   const sync = upstream ? await getAheadBehind(focusedPath, upstream, store) : { ahead: 0, behind: 0 };
   const files = parseStatusPorcelain(statusResult.stdout);
+  const worktrees = await visibleWorktreesForRepo(repo.id, allWorktrees, store);
 
   return {
     repo,
@@ -795,17 +801,12 @@ export async function getRepoReview(
   }
 
   const statusFiles = parseStatusPorcelain(statusResult.stdout);
+  const reviewInputs = await buildReviewDiffInputs(focusedPath, statusFiles, store);
   const files = (
     await Promise.all(
-      statusFiles.flatMap((file) =>
-        reviewModesForFile(file).map((mode) => buildReviewDiffFile(focusedPath, file, mode, store))
-      )
+      reviewInputs.map(({ file, mode }) => buildReviewDiffFile(focusedPath, file, mode, store))
     )
-  ).sort((left, right) => {
-    const pathCompare = left.path.localeCompare(right.path);
-    if (pathCompare !== 0) return pathCompare;
-    return reviewModeOrder(left.mode) - reviewModeOrder(right.mode);
-  });
+  ).sort(compareReviewDiffFiles);
 
   return {
     repo,
@@ -817,6 +818,77 @@ export async function getRepoReview(
   };
 }
 
+async function buildReviewDiffInputs(
+  worktreePath: string,
+  statusFiles: GitFileStatus[],
+  store?: AppStore
+): Promise<ReviewDiffInput[]> {
+  const inputs: ReviewDiffInput[] = statusFiles.flatMap((file) =>
+    reviewModesForFile(file).map((mode) => ({ file, mode }))
+  );
+  const seen = new Set(inputs.map(reviewDiffInputKey));
+
+  const [stagedPaths, unstagedPaths] = await Promise.all([
+    changedPathsForDiffMode(worktreePath, "staged", store),
+    changedPathsForDiffMode(worktreePath, "unstaged", store)
+  ]);
+
+  for (const filePath of stagedPaths) {
+    const input = { file: syntheticReviewStatus(filePath, "staged"), mode: "staged" as DiffMode };
+    if (!seen.has(reviewDiffInputKey(input))) {
+      inputs.push(input);
+      seen.add(reviewDiffInputKey(input));
+    }
+  }
+
+  for (const filePath of unstagedPaths) {
+    const input = { file: syntheticReviewStatus(filePath, "unstaged"), mode: "unstaged" as DiffMode };
+    if (!seen.has(reviewDiffInputKey(input))) {
+      inputs.push(input);
+      seen.add(reviewDiffInputKey(input));
+    }
+  }
+
+  return inputs;
+}
+
+async function changedPathsForDiffMode(
+  worktreePath: string,
+  mode: Exclude<DiffMode, "untracked">,
+  store?: AppStore
+): Promise<string[]> {
+  const args = mode === "staged"
+    ? ["diff", "--cached", "--no-ext-diff", "--name-only", "--"]
+    : ["diff", "--no-ext-diff", "--name-only", "--"];
+  const result = await runGit(worktreePath, args, store, {
+    record: false,
+    allowFailure: true,
+    timeoutMs: 120_000
+  });
+
+  if (result.exitCode !== 0) return [];
+
+  return result.stdout
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => decodeGitPath(line))
+    .filter(Boolean);
+}
+
+function syntheticReviewStatus(filePath: string, mode: Exclude<DiffMode, "untracked">): GitFileStatus {
+  return {
+    path: filePath,
+    originalPath: null,
+    indexStatus: mode === "staged" ? "M" : " ",
+    worktreeStatus: mode === "unstaged" ? "M" : " ",
+    label: "Modificado"
+  };
+}
+
+function reviewDiffInputKey(input: ReviewDiffInput): string {
+  return `${input.mode}:${input.file.path}`;
+}
+
 function reviewModesForFile(file: GitFileStatus): DiffMode[] {
   if (file.indexStatus === "?" && file.worktreeStatus === "?") return ["untracked"];
 
@@ -824,6 +896,12 @@ function reviewModesForFile(file: GitFileStatus): DiffMode[] {
   if (file.indexStatus.trim()) modes.push("staged");
   if (file.worktreeStatus.trim()) modes.push("unstaged");
   return modes;
+}
+
+function compareReviewDiffFiles(left: ReviewDiffFile, right: ReviewDiffFile): number {
+  const modeCompare = reviewModeOrder(left.mode) - reviewModeOrder(right.mode);
+  if (modeCompare !== 0) return modeCompare;
+  return left.path.localeCompare(right.path);
 }
 
 function reviewModeOrder(mode: DiffMode): number {
@@ -1022,12 +1100,23 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   return relative === "" || (Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+async function visibleWorktreesForRepo(
+  repoId: string,
+  worktrees: WorktreeRecord[],
+  store?: AppStore
+): Promise<WorktreeRecord[]> {
+  if (!store) return worktrees;
+  const archivedIds = new Set((await store.listArchivedWorktrees(repoId)).map((worktree) => worktree.worktreeId));
+  if (!archivedIds.size) return worktrees;
+  return worktrees.filter((worktree) => !archivedIds.has(worktree.id));
+}
+
 export async function getRepoSummary(
   repo: { id: string; name: string; path: string; lastOpenedAt: string },
   focusedPath = repo.path,
   store?: AppStore
 ): Promise<RepoSummary> {
-  const [gitVersion, currentBranch, worktrees, branches, commits, stashCount] = await Promise.all([
+  const [gitVersion, currentBranch, allWorktrees, branches, commits, stashCount] = await Promise.all([
     runGit(focusedPath, ["--version"], store, { record: false }),
     getCurrentBranch(focusedPath, store),
     getWorktrees(repo.path, focusedPath, store),
@@ -1038,6 +1127,7 @@ export async function getRepoSummary(
     }),
     getStashCount(repo.path, store)
   ]);
+  const worktrees = await visibleWorktreesForRepo(repo.id, allWorktrees, store);
   const changedFileCount = worktrees.reduce(
     (total, worktree) => total + (worktree.status?.total ?? 0),
     0

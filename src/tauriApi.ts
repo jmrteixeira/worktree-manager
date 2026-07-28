@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BranchRecord,
+  ArchivedWorktreeRecord,
   DiagnosticEventInput,
   DiagnosticsSnapshot,
   FsListResponse,
@@ -62,6 +63,9 @@ export const tauriApi = {
   worktrees(repoId: string, worktreePath?: string) {
     return invoke<WorktreeRecord[]>("repo_worktrees", { repoId, worktreePath });
   },
+  archivedWorktrees(repoId: string) {
+    return invoke<ArchivedWorktreeRecord[]>("archived_worktrees", { repoId });
+  },
   detail(repoId: string, worktreePath?: string) {
     return invoke<RepoDetail>("repo_detail", { repoId, worktreePath });
   },
@@ -73,6 +77,12 @@ export const tauriApi = {
   },
   removeWorktree(repoId: string, worktreeId: string, confirm: string) {
     return invoke<void>("remove_worktree", { repoId, worktreeId, confirm });
+  },
+  archiveWorktree(repoId: string, worktreeId: string) {
+    return invoke<ArchivedWorktreeRecord>("archive_worktree", { repoId, worktreeId });
+  },
+  restoreWorktree(repoId: string, worktreeId: string) {
+    return invoke<void>("restore_worktree", { repoId, worktreeId });
   },
   handoffWorktreeToLocal(repoId: string, worktreeId: string) {
     return invoke<WorktreeHandoffResult>("handoff_worktree_to_local", { repoId, worktreeId });

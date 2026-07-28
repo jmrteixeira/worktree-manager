@@ -2,12 +2,13 @@ import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AppSettings, OperationRecord, RepoRecord } from "../src/types";
+import type { AppSettings, ArchivedWorktreeRecord, OperationRecord, RepoRecord, WorktreeRecord } from "../src/types";
 
 type AppState = {
   repos: RepoRecord[];
   operations: OperationRecord[];
   settings: AppSettings;
+  archivedWorktrees: ArchivedWorktreeRecord[];
 };
 
 const defaultState: AppState = {
@@ -22,7 +23,8 @@ const defaultState: AppState = {
       editor: "auto",
       terminal: "auto"
     }
-  }
+  },
+  archivedWorktrees: []
 };
 
 export class AppStore {
@@ -71,6 +73,42 @@ export class AppStore {
     return this.updateState((state) => {
       state.settings = normalizeSettings({ ...state.settings, ...settings });
       return state.settings;
+    });
+  }
+
+  async listArchivedWorktrees(repoId: string): Promise<ArchivedWorktreeRecord[]> {
+    const state = await this.readState();
+    return state.archivedWorktrees
+      .filter((worktree) => worktree.repoId === repoId)
+      .sort((left, right) => right.archivedAt.localeCompare(left.archivedAt));
+  }
+
+  async archiveWorktree(repoId: string, worktree: WorktreeRecord): Promise<ArchivedWorktreeRecord> {
+    const record: ArchivedWorktreeRecord = {
+      repoId,
+      worktreeId: worktree.id,
+      path: path.resolve(worktree.path),
+      branch: worktree.branch,
+      head: worktree.head,
+      archivedAt: new Date().toISOString()
+    };
+
+    return this.updateState((state) => {
+      state.archivedWorktrees = [
+        record,
+        ...state.archivedWorktrees.filter(
+          (item) => item.repoId !== repoId || item.worktreeId !== worktree.id
+        )
+      ];
+      return record;
+    });
+  }
+
+  async restoreWorktree(repoId: string, worktreeId: string): Promise<void> {
+    await this.updateState((state) => {
+      state.archivedWorktrees = state.archivedWorktrees.filter(
+        (item) => item.repoId !== repoId || item.worktreeId !== worktreeId
+      );
     });
   }
 
@@ -156,8 +194,36 @@ function parseState(contents: string): AppState {
   return {
     repos: Array.isArray(parsed.repos) ? parsed.repos : [],
     operations: Array.isArray(parsed.operations) ? parsed.operations : [],
-    settings: normalizeSettings(parsed.settings)
+    settings: normalizeSettings(parsed.settings),
+    archivedWorktrees: normalizeArchivedWorktrees(parsed.archivedWorktrees)
   };
+}
+
+function normalizeArchivedWorktrees(value: unknown): ArchivedWorktreeRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      const record = item as Partial<ArchivedWorktreeRecord>;
+      if (
+        typeof record.repoId !== "string" ||
+        typeof record.worktreeId !== "string" ||
+        typeof record.path !== "string" ||
+        typeof record.archivedAt !== "string"
+      ) {
+        return null;
+      }
+
+      return {
+        repoId: record.repoId,
+        worktreeId: record.worktreeId,
+        path: path.resolve(record.path),
+        branch: typeof record.branch === "string" ? record.branch : null,
+        head: typeof record.head === "string" ? record.head : null,
+        archivedAt: record.archivedAt
+      } satisfies ArchivedWorktreeRecord;
+    })
+    .filter((item): item is ArchivedWorktreeRecord => Boolean(item));
 }
 
 function normalizeSettings(value: unknown): AppSettings {

@@ -44,6 +44,15 @@ export type WorktreeRecord = {
   behind?: number;
 };
 
+export type ArchivedWorktreeRecord = {
+  repoId: string;
+  worktreeId: string;
+  path: string;
+  branch: string | null;
+  head: string | null;
+  archivedAt: string;
+};
+
 export type GitFileStatus = {
   path: string;
   originalPath: string | null;

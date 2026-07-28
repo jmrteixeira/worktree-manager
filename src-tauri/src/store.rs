@@ -1,4 +1,7 @@
-use crate::models::{AppSettings, AppSettingsPatch, OperationRecord, RepoRecord};
+use crate::models::{
+    AppSettings, AppSettingsPatch, ArchivedWorktreeRecord, OperationRecord, RepoRecord,
+    WorktreeRecord,
+};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -14,6 +17,8 @@ use uuid::Uuid;
 struct StoreData {
     repos: Vec<RepoRecord>,
     operations: Vec<OperationRecord>,
+    #[serde(default)]
+    archived_worktrees: Vec<ArchivedWorktreeRecord>,
     #[serde(default)]
     settings: AppSettings,
 }
@@ -113,6 +118,49 @@ impl AppState {
         let settings = data.settings.clone();
         write_state(&self.state_file, &data)?;
         Ok(settings)
+    }
+
+    pub fn list_archived_worktrees(&self, repo_id: &str) -> Vec<ArchivedWorktreeRecord> {
+        let mut worktrees = self
+            .data
+            .lock()
+            .expect("store mutex poisoned")
+            .archived_worktrees
+            .iter()
+            .filter(|worktree| worktree.repo_id == repo_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        worktrees.sort_by(|left, right| right.archived_at.cmp(&left.archived_at));
+        worktrees
+    }
+
+    pub fn archive_worktree(
+        &self,
+        repo_id: &str,
+        worktree: &WorktreeRecord,
+    ) -> Result<ArchivedWorktreeRecord, String> {
+        let record = ArchivedWorktreeRecord {
+            repo_id: repo_id.to_string(),
+            worktree_id: worktree.id.clone(),
+            path: path_string(&absolute_path(Path::new(&worktree.path))),
+            branch: worktree.branch.clone(),
+            head: worktree.head.clone(),
+            archived_at: now_iso(),
+        };
+
+        let mut data = self.data.lock().expect("store mutex poisoned");
+        data.archived_worktrees
+            .retain(|item| item.repo_id != repo_id || item.worktree_id != worktree.id);
+        data.archived_worktrees.insert(0, record.clone());
+        write_state(&self.state_file, &data)?;
+        Ok(record)
+    }
+
+    pub fn restore_worktree(&self, repo_id: &str, worktree_id: &str) -> Result<(), String> {
+        let mut data = self.data.lock().expect("store mutex poisoned");
+        data.archived_worktrees
+            .retain(|item| item.repo_id != repo_id || item.worktree_id != worktree_id);
+        write_state(&self.state_file, &data)
     }
 
     pub fn record_operation(&self, mut operation: OperationRecord) -> OperationRecord {
