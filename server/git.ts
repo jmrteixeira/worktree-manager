@@ -1549,6 +1549,7 @@ async function findReusableDetachedWorktreeForBranch(
     record: false
   });
   const worktrees = parseWorktreePorcelain(porcelain.stdout, repoPath);
+  const candidates: WorktreeRecord[] = [];
 
   for (const worktree of worktrees) {
     const worktreePath = await comparablePath(worktree.path);
@@ -1557,13 +1558,33 @@ async function findReusableDetachedWorktreeForBranch(
       worktree.detached &&
       !worktree.bare &&
       !worktree.branch &&
-      worktree.head === branchHead
+      worktree.head
     ) {
-      return worktree;
+      if (worktree.head === branchHead) return worktree;
+      candidates.push(worktree);
     }
   }
 
-  return null;
+  let bestCandidate: { worktree: WorktreeRecord; distance: number } | null = null;
+  for (const worktree of candidates) {
+    const isAncestor = await runGit(repoPath, ["merge-base", "--is-ancestor", worktree.head!, branchHead], store, {
+      allowFailure: true,
+      record: false
+    });
+    if (isAncestor.exitCode !== 0) continue;
+
+    const distanceResult = await runGit(repoPath, ["rev-list", "--count", `${worktree.head}..${branchHead}`], store, {
+      allowFailure: true,
+      record: false
+    });
+    const distance = Number(distanceResult.stdout.trim());
+    const normalizedDistance = Number.isFinite(distance) ? distance : Number.MAX_SAFE_INTEGER;
+    if (!bestCandidate || normalizedDistance < bestCandidate.distance) {
+      bestCandidate = { worktree, distance: normalizedDistance };
+    }
+  }
+
+  return bestCandidate?.worktree ?? null;
 }
 
 async function comparablePath(value: string): Promise<string> {

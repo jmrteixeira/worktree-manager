@@ -826,6 +826,45 @@ describe("api", () => {
     expect(localBranch.stdout.trim()).toBe("main");
     expect(worktreeBranch.stdout.trim()).toBe("feature/custom-reuse");
   });
+
+  it("reuses the detached source worktree after local commits and carries local dirty changes", async () => {
+    const topLevelPath = await validateRepository(repoDir, store);
+    const repo = await store.upsertRepo(topLevelPath);
+    const externalPath = path.join(tmpDir, "external-source-worktree");
+
+    await runGit(repo.path, ["worktree", "add", "-b", "feature/external-source", externalPath], store);
+    await handoffWorktreeBranchToLocal(repo.path, externalPath, store);
+    await fs.writeFile(path.join(repo.path, "committed-local.txt"), "committed locally\n");
+    await runGit(repo.path, ["add", "committed-local.txt"], store);
+    await runGit(repo.path, ["commit", "-m", "local progress"], store);
+    await fs.appendFile(path.join(repo.path, "README.md"), "dirty local handoff\n");
+    await fs.writeFile(path.join(repo.path, "untracked-local.txt"), "untracked local\n");
+
+    const result = await moveLocalBranchToWorktree(repo, {}, store);
+    const localBranch = await git(repo.path, "branch", "--show-current");
+    const localStatus = await git(repo.path, "status", "--porcelain=v1", "-uall");
+    const worktreeBranch = await git(externalPath, "branch", "--show-current");
+    const worktreeStatus = await git(externalPath, "status", "--porcelain=v1", "-uall");
+    const committedLocal = await fs.readFile(path.join(externalPath, "committed-local.txt"), "utf8");
+    const readme = await fs.readFile(path.join(externalPath, "README.md"), "utf8");
+    const untrackedLocal = await fs.readFile(path.join(externalPath, "untracked-local.txt"), "utf8");
+
+    expect(result).toMatchObject({
+      branch: "feature/external-source",
+      baseBranch: "main",
+      localPath: repo.path,
+      worktreePath: await fs.realpath(externalPath),
+      movedChanges: true
+    });
+    expect(localBranch.stdout.trim()).toBe("main");
+    expect(localStatus.stdout.trim()).toBe("");
+    expect(worktreeBranch.stdout.trim()).toBe("feature/external-source");
+    expect(worktreeStatus.stdout).toContain(" M README.md");
+    expect(worktreeStatus.stdout).toContain("?? untracked-local.txt");
+    expect(normalizeNewlines(committedLocal)).toBe("committed locally\n");
+    expect(readme).toContain("dirty local handoff");
+    expect(normalizeNewlines(untrackedLocal)).toBe("untracked local\n");
+  });
 });
 
 function operationFixture(

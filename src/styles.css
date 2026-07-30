@@ -808,75 +808,136 @@ select:focus-visible {
 }
 
 .repo-focus-select {
-  min-width: 220px;
-  max-width: 280px;
-  display: block;
-}
-
-.repo-focus-control {
-  min-height: 40px;
-  min-width: 0;
   position: relative;
-  display: block;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--button-bg);
-  color: var(--text-primary);
-  overflow: hidden;
+  min-width: 240px;
+  max-width: 320px;
 }
 
-.repo-focus-control:focus-within {
+.repo-focus-trigger {
+  width: 100%;
+  min-height: 44px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--button-bg);
+  color: var(--text-primary);
+  padding: 7px 10px;
+  text-align: left;
+  box-shadow: var(--shadow-inset);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.repo-focus-trigger:hover,
+.repo-focus-trigger[aria-expanded="true"] {
   border-color: var(--accent-border);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface-muted);
+}
+
+.repo-focus-trigger[aria-expanded="true"] {
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-inset);
 }
 
 .repo-focus-status {
   width: 10px;
   height: 10px;
-  position: absolute;
-  top: 50%;
-  left: 14px;
-  z-index: 1;
-  transform: translateY(-50%);
+  flex: 0 0 auto;
   border-radius: 999px;
   background: var(--text-subtle);
   opacity: 0.7;
-  pointer-events: none;
 }
 
 .repo-focus-status.active {
-  background: #3ee474;
-  box-shadow: 0 0 0 7px rgba(62, 228, 116, 0.12);
+  background: var(--badge-green-text);
+  box-shadow: 0 0 0 6px var(--badge-green-bg);
   opacity: 1;
 }
 
-.repo-focus-control select {
-  width: 100%;
-  min-height: 40px;
+.repo-focus-copy {
   min-width: 0;
-  border: 0;
-  outline: 0;
-  appearance: none;
-  background: transparent;
+  display: grid;
+  gap: 2px;
+}
+
+.repo-focus-copy strong,
+.repo-focus-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-focus-copy strong {
   color: var(--text-primary);
-  cursor: pointer;
   font-size: 13px;
   font-weight: 800;
-  padding: 0 34px 0 34px;
 }
 
-.repo-focus-control > svg {
-  position: absolute;
-  top: 50%;
-  right: 11px;
-  z-index: 1;
-  transform: translateY(-50%);
+.repo-focus-copy small {
   color: var(--text-muted);
-  pointer-events: none;
+  font-size: 11px;
+  font-weight: 700;
 }
 
-.repo-focus-control select:disabled {
-  color: var(--text-subtle);
+.repo-focus-chevron {
+  color: var(--text-muted);
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.repo-focus-chevron.open {
+  color: var(--accent);
+  transform: rotate(180deg);
+}
+
+.repo-focus-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 900;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-menu);
+  box-shadow: var(--shadow-menu);
+}
+
+.repo-focus-option {
+  width: 100%;
+  min-height: 54px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.repo-focus-option:hover,
+.repo-focus-option.active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.repo-focus-option > svg {
+  color: var(--badge-green-text);
 }
 
 .topbar > div,

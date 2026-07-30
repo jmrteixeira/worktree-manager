@@ -3140,30 +3140,103 @@ function RepositoryFocusSelect({
   onChange: (repoId: string) => void;
 }) {
   const { t } = useI18n();
+  const selectedRepo = repos.find((repo) => repo.id === selectedRepoId) ?? repos[0] ?? null;
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!repos.length) setOpen(false);
+  }, [repos.length]);
+
+  function selectRepository(repoId: string) {
+    onChange(repoId);
+    setOpen(false);
+    buttonRef.current?.focus();
+  }
+
+  function handleTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setOpen(true);
+    }
+  }
 
   return (
-    <label className="repo-focus-select">
-      <span className="sr-only">{t("Repositório em foco")}</span>
-      <span className="repo-focus-control">
+    <div className="repo-focus-select">
+      <button
+        ref={buttonRef}
+        aria-controls={open ? listboxId : undefined}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label={t("Escolher repositório em foco")}
+        className="repo-focus-trigger"
+        disabled={!repos.length}
+        title={selectedRepo?.path ?? t("Sem repositórios")}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={handleTriggerKeyDown}
+      >
         <span className={repos.length ? "repo-focus-status active" : "repo-focus-status"} aria-hidden="true" />
-        <select
-          aria-label={t("Escolher repositório em foco")}
-          disabled={!repos.length}
-          value={selectedRepoId ?? ""}
-          onChange={(event) => {
-            if (event.target.value) onChange(event.target.value);
-          }}
-        >
-          {!repos.length ? <option value="">{t("Sem repositórios")}</option> : null}
-          {repos.map((repo) => (
-            <option key={repo.id} value={repo.id}>
-              {repo.name}
-            </option>
-          ))}
-        </select>
-        <ChevronDown size={15} aria-hidden="true" />
-      </span>
-    </label>
+        <span className="repo-focus-copy">
+          <strong>{selectedRepo?.name ?? t("Sem repositórios")}</strong>
+          <small>{selectedRepo?.path ?? t("Seleciona um repositório para começar.")}</small>
+        </span>
+        <ChevronDown className={open ? "repo-focus-chevron open" : "repo-focus-chevron"} size={16} aria-hidden="true" />
+      </button>
+
+      {open ? (
+        <div ref={menuRef} id={listboxId} className="repo-focus-menu" role="listbox" aria-label={t("Escolher repositório em foco")}>
+          {repos.map((repo) => {
+            const active = repo.id === selectedRepoId;
+            return (
+              <button
+                key={repo.id}
+                className={active ? "repo-focus-option active" : "repo-focus-option"}
+                role="option"
+                aria-selected={active}
+                type="button"
+                onClick={() => selectRepository(repo.id)}
+              >
+                <span className={active ? "repo-focus-status active" : "repo-focus-status"} aria-hidden="true" />
+                <span className="repo-focus-copy">
+                  <strong>{repo.name}</strong>
+                  <small>{repo.path}</small>
+                </span>
+                {active ? <CheckCircle2 size={16} aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

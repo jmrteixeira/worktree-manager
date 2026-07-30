@@ -2406,14 +2406,75 @@ fn find_reusable_detached_worktree_for_branch(
         },
     )?;
     let worktrees = parse_worktree_porcelain(&porcelain.stdout, repo_path);
+    let mut candidates = Vec::new();
 
-    Ok(worktrees.into_iter().find(|worktree| {
-        comparable_path(Path::new(&worktree.path)) != local_path
+    for worktree in worktrees {
+        if comparable_path(Path::new(&worktree.path)) != local_path
             && worktree.detached
             && !worktree.bare
             && worktree.branch.is_none()
-            && worktree.head.as_deref() == Some(branch_head.as_str())
-    }))
+            && worktree.head.is_some()
+        {
+            if worktree.head.as_deref() == Some(branch_head.as_str()) {
+                return Ok(Some(worktree));
+            }
+            candidates.push(worktree);
+        }
+    }
+
+    let mut best_candidate: Option<(WorktreeRecord, usize)> = None;
+    for worktree in candidates {
+        let Some(head) = worktree.head.as_deref() else {
+            continue;
+        };
+        let is_ancestor = run_git(
+            repo_path,
+            vec![
+                "merge-base".to_string(),
+                "--is-ancestor".to_string(),
+                head.to_string(),
+                branch_head.clone(),
+            ],
+            Some(state),
+            RunGitOptions {
+                allow_failure: true,
+                record: false,
+                ..Default::default()
+            },
+        )?;
+        if is_ancestor.exit_code != Some(0) {
+            continue;
+        }
+
+        let distance = run_git(
+            repo_path,
+            vec![
+                "rev-list".to_string(),
+                "--count".to_string(),
+                format!("{head}..{branch_head}"),
+            ],
+            Some(state),
+            RunGitOptions {
+                allow_failure: true,
+                record: false,
+                ..Default::default()
+            },
+        )?
+        .stdout
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(usize::MAX);
+
+        if best_candidate
+            .as_ref()
+            .map(|(_, best_distance)| distance < *best_distance)
+            .unwrap_or(true)
+        {
+            best_candidate = Some((worktree, distance));
+        }
+    }
+
+    Ok(best_candidate.map(|(worktree, _)| worktree))
 }
 
 fn comparable_path(value: &Path) -> PathBuf {

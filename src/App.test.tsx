@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { api } from "./api";
@@ -614,7 +614,7 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("Repos ativos");
-    fireEvent.click(screen.getAllByText("/tmp/WorktreeManager")[0]);
+    fireEvent.click(within(screen.getByRole("region", { name: "Repos ativos" })).getByRole("button", { name: /WorktreeManager/ }));
 
     await waitFor(() => expect(mockedApi.detail).toHaveBeenCalledWith("repo-1", "/tmp/WorktreeManager"));
     expect(await screen.findByText("Estado local")).toBeInTheDocument();
@@ -1141,13 +1141,14 @@ describe("App", () => {
     await waitFor(() => expect(mockedApi.summary).toHaveBeenCalledWith("repo-2", undefined));
     expect(await screen.findByText("Área de trabalho")).toBeInTheDocument();
     expect(screen.getByText("Repos ativos")).toBeInTheDocument();
-    const repoSelector = screen.getByRole("combobox", { name: "Escolher repositório em foco" });
-    expect(repoSelector).toHaveValue("repo-1");
+    const repoSelector = screen.getByRole("button", { name: "Escolher repositório em foco" });
+    expect(repoSelector).toHaveTextContent("Frontend");
     expect(screen.getAllByText("Frontend").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Backend").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("develop")).toBeInTheDocument();
-    fireEvent.change(repoSelector, { target: { value: "repo-2" } });
-    expect(repoSelector).toHaveValue("repo-2");
+    fireEvent.click(repoSelector);
+    fireEvent.click(screen.getByRole("option", { name: /Backend/ }));
+    expect(repoSelector).toHaveTextContent("Backend");
   });
 
   it("uses the persisted focused worktree path when loading repo data", async () => {
